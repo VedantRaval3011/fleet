@@ -1,0 +1,67 @@
+[
+  {
+    "_id": "699c2834b03c1d641615d6cc",
+    "phoneNumber": "+919313450501",
+    "callType": "OUTGOING",
+    "duration": 10,
+    "timestamp": "2026-02-23T10:13:08.642Z",
+    "deviceId": "86f181688b347ce7",
+    "employeeName": "Blitz",
+    "syncedAt": "2026-02-23T10:13:08.615Z",
+    "createdAt": "2026-02-23T10:13:08.619Z",
+    "updatedAt": "2026-02-23T10:13:08.619Z",
+    "__v": 0
+  },
+  {
+    "_id": "699c287ab03c1d641615d6d0",
+    "phoneNumber": "UNKNOWN",
+    "callType": "INCOMING",
+    "duration": 6,
+    "timestamp": "2026-02-23T10:14:18.618Z",
+    "deviceId": "86f181688b347ce7",
+    "employeeName": "Blitz",
+    "syncedAt": "2026-02-23T10:14:18.555Z",
+    "createdAt": "2026-02-23T10:14:18.556Z",
+    "updatedAt": "2026-02-23T10:14:18.556Z",
+    "__v": 0
+  },
+  {
+    "_id": "699c28adb03c1d641615d6d2",
+    "phoneNumber": "UNKNOWN",
+    "callType": "INCOMING",
+    "duration": 7,
+    "timestamp": "2026-02-23T10:15:08.951Z",
+    "deviceId": "86f181688b347ce7",
+    "employeeName": "Blitz",
+    "syncedAt": "2026-02-23T10:15:09.520Z",
+    "createdAt": "2026-02-23T10:15:09.521Z",
+    "updatedAt": "2026-02-23T10:15:09.521Z",
+    "__v": 0
+  },
+  {
+    "_id": "699c2a8c95998bf318379800",
+    "phoneNumber": "UNKNOWN",
+    "callType": "MISSED",
+    "duration": 0,
+    "timestamp": "2026-02-23T10:23:04.614Z",
+    "deviceId": "86f181688b347ce7",
+    "employeeName": "Blitz",
+    "syncedAt": "2026-02-23T10:23:08.235Z",
+    "createdAt": "2026-02-23T10:23:08.241Z",
+    "updatedAt": "2026-02-23T10:23:08.241Z",
+    "__v": 0
+  },
+  {
+    "_id": "699c36cdf1f0f4619990ef54",
+    "phoneNumber": "+919313450501",
+    "callType": "OUTGOING",
+    "duration": 8,
+    "timestamp": "2026-02-23T11:15:24.276Z",
+    "deviceId": "86f181688b347ce7",
+    "employeeName": "Blitzkrieg",
+    "syncedAt": "2026-02-23T11:15:25.896Z",
+    "createdAt": "2026-02-23T11:15:25.900Z",
+    "updatedAt": "2026-02-23T11:15:25.900Z",
+    "__v": 0
+  }
+]
