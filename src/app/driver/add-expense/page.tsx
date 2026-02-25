@@ -377,7 +377,7 @@ export default function AddExpensePage() {
 
         <div className="space-y-4 bg-slate-900 p-5 rounded-2xl border border-slate-800">
           <div className="space-y-2">
-            <Label className="text-slate-300">Amount ($)</Label>
+            <Label className="text-slate-300">Amount (₹)</Label>
             <Input 
               type="number" 
               placeholder="0.00" 

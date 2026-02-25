@@ -7,8 +7,9 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { UserPlus, Loader2, Edit2, Trash2, ShieldAlert } from "lucide-react";
+import { UserPlus, Loader2, Edit2, Trash2, ShieldAlert, Wallet, Plus, X, Users, Sparkles } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
+import { Label } from "@/components/ui/label";
 
 export default function UsersPage() {
   const [users, setUsers] = useState<any[]>([]);
@@ -23,6 +24,13 @@ export default function UsersPage() {
   
   const [deletingUser, setDeletingUser] = useState<any | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
+
+  // Top-up Modal states
+  const [topUpUser, setTopUpUser] = useState<any | null>(null);
+  const [topUpAmount, setTopUpAmount] = useState("");
+  const [topUpNote, setTopUpNote] = useState("");
+  const [isSubmittingTopUp, setIsSubmittingTopUp] = useState(false);
+  const [topUpError, setTopUpError] = useState("");
 
   useEffect(() => {
     fetchUsers();
@@ -71,7 +79,7 @@ export default function UsersPage() {
       name: user.name, 
       email: user.email, 
       username: user.username || "", 
-      password: "", // Intentionally blank, only sent if typed
+      password: "", 
       role: user.role 
     });
   };
@@ -123,112 +131,287 @@ export default function UsersPage() {
     }
   };
 
+  const openTopUpModal = (user: any) => {
+    setTopUpUser(user);
+    setTopUpAmount("");
+    setTopUpNote("");
+    setTopUpError("");
+  };
+
+  const handleTopUp = async () => {
+    const amount = parseFloat(topUpAmount);
+    if (!topUpUser || !topUpUser.driverId || isNaN(amount) || amount <= 0) {
+      setTopUpError("Please enter a valid positive amount.");
+      return;
+    }
+    setIsSubmittingTopUp(true);
+    setTopUpError("");
+    try {
+      const res = await fetch("/api/drivers/topup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ driverId: topUpUser.driverId, amount, note: topUpNote || undefined }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Top-up failed");
+
+      setUsers(prev => prev.map(u => 
+        u._id === topUpUser._id ? { ...u, walletBalance: data.newBalance } : u
+      ));
+      setTopUpUser(null);
+    } catch (err: any) {
+      setTopUpError(err.message);
+    } finally {
+      setIsSubmittingTopUp(false);
+    }
+  };
+
+
   return (
-    <div className="space-y-6">
-      <div className="flex justify-between items-center">
-        <h1 className="text-3xl font-bold tracking-tight text-white">User Management</h1>
+    <div className="space-y-8 relative min-h-[calc(100vh-8rem)]">
+      {/* Ambient background glow */}
+      <div className="absolute top-0 right-[20%] w-[500px] h-[500px] bg-indigo-500/10 rounded-full blur-[120px] pointer-events-none" />
+      <div className="absolute bottom-0 left-[10%] w-[400px] h-[400px] bg-fuchsia-500/5 rounded-full blur-[100px] pointer-events-none" />
+
+      <div className="flex justify-between items-center relative z-10">
+        <div>
+          <h1 className="text-4xl font-extrabold tracking-tight text-transparent bg-clip-text bg-gradient-to-r from-white to-slate-400 flex items-center gap-3">
+            <Users className="w-8 h-8 text-indigo-400" />
+            User Management
+          </h1>
+          <p className="text-slate-400 mt-2">Manage your team members and their wallet balances.</p>
+        </div>
       </div>
 
-      <div className="grid gap-6 md:grid-cols-3">
+      <div className="grid gap-8 xl:grid-cols-4 relative z-10">
         {/* Create User Form */}
-        <Card className="md:col-span-1 bg-slate-900 border-slate-800 text-slate-100 h-fit">
-          <CardContent className="pt-6">
-            <h2 className="text-xl font-semibold mb-4 text-white">Create User</h2>
-            <form onSubmit={createUser} className="space-y-4">
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-slate-300">Full Name</label>
-                <Input required value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} className="bg-slate-950 border-slate-700" placeholder="John Doe" />
+        <Card className="xl:col-span-1 bg-slate-900/60 backdrop-blur-xl border-slate-800/60 shadow-2xl h-fit overflow-hidden relative">
+          <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-indigo-500 to-fuchsia-500" />
+          <CardContent className="pt-8">
+            <div className="flex items-center gap-2 mb-6">
+              <Sparkles className="w-5 h-5 text-fuchsia-400" />
+              <h2 className="text-xl font-bold text-white tracking-tight">Add Team Member</h2>
+            </div>
+            
+            <form onSubmit={createUser} className="space-y-5">
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Full Name</label>
+                <Input required value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} className="h-11 bg-slate-950/50 border-slate-700/80 focus:ring-fuchsia-500/50" placeholder="John Doe" />
               </div>
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-slate-300">Username (Optional)</label>
-                <Input value={formData.username} onChange={e => setFormData({...formData, username: e.target.value})} className="bg-slate-950 border-slate-700" placeholder="johndoe123" />
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Username <span className="text-slate-500 opacity-60">(Opt)</span></label>
+                <Input value={formData.username} onChange={e => setFormData({...formData, username: e.target.value})} className="h-11 bg-slate-950/50 border-slate-700/80 focus:ring-fuchsia-500/50" placeholder="@johndoe123" />
               </div>
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-slate-300">Email</label>
-                <Input required type="email" value={formData.email} onChange={e => setFormData({...formData, email: e.target.value})} className="bg-slate-950 border-slate-700" placeholder="john@company.com" />
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Email</label>
+                <Input required type="email" value={formData.email} onChange={e => setFormData({...formData, email: e.target.value})} className="h-11 bg-slate-950/50 border-slate-700/80 focus:ring-fuchsia-500/50" placeholder="john@company.com" />
               </div>
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-slate-300">Password</label>
-                <Input required type="password" value={formData.password} onChange={e => setFormData({...formData, password: e.target.value})} className="bg-slate-950 border-slate-700" placeholder="••••••••" />
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Password</label>
+                <Input required type="password" value={formData.password} onChange={e => setFormData({...formData, password: e.target.value})} className="h-11 bg-slate-950/50 border-slate-700/80 focus:ring-fuchsia-500/50" placeholder="••••••••" />
               </div>
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-slate-300">Role</label>
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Role</label>
                 <Select value={formData.role} onValueChange={v => setFormData({...formData, role: v})}>
-                  <SelectTrigger className="bg-slate-950 border-slate-700">
+                  <SelectTrigger className="h-11 bg-slate-950/50 border-slate-700/80 focus:ring-fuchsia-500/50">
                     <SelectValue placeholder="Select a role" />
                   </SelectTrigger>
-                  <SelectContent>
+                  <SelectContent className="bg-slate-900 border-slate-800">
                     <SelectItem value="admin">Admin</SelectItem>
-                    <SelectItem value="driver">Driver</SelectItem>
+                    <SelectItem value="driver">Employee (Driver)</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
-              <Button type="submit" disabled={isCreating} className="w-full bg-indigo-600 hover:bg-indigo-700">
-                {isCreating ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <UserPlus className="mr-2 h-4 w-4" />}
-                Add User
+              <Button type="submit" disabled={isCreating} className="w-full h-12 bg-gradient-to-r from-indigo-600 to-indigo-500 hover:from-indigo-500 hover:to-indigo-400 text-white font-bold shadow-lg shadow-indigo-500/25 transition-all">
+                {isCreating ? <Loader2 className="mr-2 h-5 w-5 animate-spin" /> : <UserPlus className="mr-2 h-5 w-5" />}
+                Add Employee
               </Button>
             </form>
           </CardContent>
         </Card>
 
         {/* User List */}
-        <Card className="md:col-span-2 bg-slate-900 border-slate-800 text-slate-100">
-          <Table>
-            <TableHeader className="bg-slate-950/50">
-              <TableRow className="border-slate-800">
-                <TableHead className="text-slate-400">Name</TableHead>
-                <TableHead className="text-slate-400">Username / Email</TableHead>
-                <TableHead className="text-slate-400">Role</TableHead>
-                <TableHead className="text-slate-400">Joined</TableHead>
-                <TableHead className="text-slate-400 text-right">Actions</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {isLoading ? (
-                <TableRow>
-                  <TableCell colSpan={5} className="h-32 text-center">
-                    <Loader2 className="h-6 w-6 animate-spin mx-auto text-indigo-500" />
-                  </TableCell>
+        <Card className="xl:col-span-3 bg-slate-900/60 backdrop-blur-xl border-slate-800/60 shadow-2xl overflow-hidden rounded-2xl">
+          <div className="overflow-x-auto">
+            <Table>
+              <TableHeader className="bg-slate-900/80 backdrop-blur-md">
+                <TableRow className="border-slate-800 hover:bg-transparent">
+                  <TableHead className="text-slate-400 font-semibold tracking-wider text-xs uppercase py-4">Name</TableHead>
+                  <TableHead className="text-slate-400 font-semibold tracking-wider text-xs uppercase py-4">Auth Details</TableHead>
+                  <TableHead className="text-slate-400 font-semibold tracking-wider text-xs uppercase py-4">Role</TableHead>
+                  <TableHead className="text-slate-400 font-semibold tracking-wider text-xs uppercase py-4">Wallet Balance</TableHead>
+                  <TableHead className="text-slate-400 font-semibold tracking-wider text-xs uppercase text-right py-4">Actions</TableHead>
                 </TableRow>
-              ) : users.map(user => (
-                <TableRow key={user._id} className="border-slate-800">
-                  <TableCell className="font-medium">{user.name}</TableCell>
-                  <TableCell className="text-slate-400">
-                    {user.username && <span className="font-medium text-indigo-300 block">@{user.username}</span>}
-                    <span className="text-xs text-slate-500">{user.email}</span>
-                  </TableCell>
-                  <TableCell>
-                    <Badge variant="outline" className={user.role === 'admin' ? "border-amber-500 text-amber-500" : "border-indigo-500 text-indigo-500"}>
-                      {user.role}
-                    </Badge>
-                  </TableCell>
-                  <TableCell className="text-slate-400">{new Date(user.createdAt).toLocaleDateString()}</TableCell>
-                  <TableCell className="text-right">
-                     <div className="flex justify-end gap-2">
-                        <Button 
-                          variant="outline" 
-                          size="sm" 
-                          className="h-8 w-8 p-0 border-slate-700 hover:bg-slate-800 hover:text-indigo-400"
-                          onClick={() => openEditModal(user)}
-                        >
-                          <Edit2 className="h-4 w-4" />
-                        </Button>
-                        <Button 
-                          variant="outline" 
-                          size="sm" 
-                          className="h-8 w-8 p-0 border-slate-700 hover:bg-rose-500/10 hover:text-rose-400 hover:border-rose-500/50"
-                          onClick={() => setDeletingUser(user)}
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
-                     </div>
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+              </TableHeader>
+              <TableBody>
+                {isLoading ? (
+                  <TableRow className="hover:bg-transparent">
+                    <TableCell colSpan={5} className="h-48 text-center">
+                      <Loader2 className="h-8 w-8 animate-spin mx-auto text-indigo-500 mb-2" />
+                      <p className="text-sm text-slate-500">Loading your team...</p>
+                    </TableCell>
+                  </TableRow>
+                ) : users.map(user => (
+                  <TableRow key={user._id} className="border-slate-800/60 hover:bg-slate-800/30 transition-colors group">
+                    <TableCell className="font-semibold text-slate-200 whitespace-nowrap py-4">
+                      {user.name}
+                    </TableCell>
+                    <TableCell className="py-4">
+                      {user.username && <span className="font-medium text-indigo-300 block mb-0.5">@{user.username}</span>}
+                      <span className="text-xs text-slate-400">{user.email}</span>
+                    </TableCell>
+                    <TableCell className="py-4">
+                      <Badge variant="outline" className={`border ${
+                        user.role === 'admin' 
+                          ? "border-amber-500/30 text-amber-400 bg-amber-500/10" 
+                          : "border-indigo-500/30 text-indigo-400 bg-indigo-500/10"
+                      }`}>
+                        {user.role}
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="py-4">
+                      {user.role === "driver" ? (
+                        <div className="flex items-center gap-2">
+                          <Wallet className="w-4 h-4 text-slate-500" />
+                          <span className={`font-mono font-bold text-lg tracking-tight ${user.walletBalance > 0 ? "text-emerald-400" : "text-slate-500"}`}>
+                            ₹{(user.walletBalance || 0).toFixed(2)}
+                          </span>
+                        </div>
+                      ) : (
+                        <span className="text-slate-600 text-sm italic opacity-50">Not applicable</span>
+                      )}
+                    </TableCell>
+                    <TableCell className="text-right py-4">
+                       <div className="flex justify-end items-center gap-2 opacity-80 group-hover:opacity-100 transition-opacity">
+                          {user.role === "driver" && user.driverId && (
+                            <Button 
+                              variant="ghost" 
+                              size="sm" 
+                              className="bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 hover:text-emerald-300 border border-emerald-500/20 whitespace-nowrap h-9 px-4 rounded-full transition-all hover:scale-105"
+                              onClick={() => openTopUpModal(user)}
+                            >
+                              <Plus className="w-4 h-4 mr-1.5" /> Add Funds
+                            </Button>
+                          )}
+                          <Button 
+                            variant="ghost" 
+                            size="icon" 
+                            className="h-9 w-9 text-slate-400 hover:bg-indigo-500/10 hover:text-indigo-400 rounded-full transition-colors"
+                            onClick={() => openEditModal(user)}
+                            title="Edit User"
+                          >
+                            <Edit2 className="h-4 w-4" />
+                          </Button>
+                          <Button 
+                            variant="ghost" 
+                            size="icon" 
+                            className="h-9 w-9 text-slate-400 hover:bg-rose-500/10 hover:text-rose-400 rounded-full transition-colors"
+                            onClick={() => setDeletingUser(user)}
+                            title="Delete User"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                       </div>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
         </Card>
       </div>
+
+      {/* Top-Up Modal inline (z-50) */}
+      {topUpUser && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-md p-4 h-screen w-screen absolute top-0 left-0">
+          <div className="bg-slate-900 border border-slate-700/50 rounded-3xl p-6 w-full max-w-sm shadow-2xl space-y-5 relative overflow-hidden">
+            <div className="absolute top-0 right-0 w-32 h-32 bg-emerald-500/10 rounded-full blur-3xl" />
+            
+            <div className="flex items-center justify-between pointer-events-auto relative z-10">
+              <div>
+                <h2 className="text-xl font-extrabold text-white tracking-tight">Add Balance</h2>
+                <p className="text-sm text-slate-400 mt-0.5 font-medium">{topUpUser.name}</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setTopUpUser(null)}
+                className="p-2.5 rounded-full hover:bg-slate-800 text-slate-400 cursor-pointer pointer-events-auto transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="bg-slate-950/50 border border-slate-800/60 rounded-2xl p-4 flex items-center gap-4 relative z-10">
+              <div className="w-10 h-10 rounded-full bg-emerald-500/10 flex items-center justify-center shrink-0">
+                <Wallet className="w-5 h-5 text-emerald-400" />
+              </div>
+              <div>
+                <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Current Balance</p>
+                <p className="text-2xl font-black text-white mt-0.5">
+                  ₹{(topUpUser.walletBalance || 0).toFixed(2)}
+                </p>
+              </div>
+            </div>
+
+            <div className="space-y-4 pointer-events-auto relative z-10">
+              <div className="space-y-2">
+                <Label className="text-slate-300 font-semibold">Amount to Add (₹)</Label>
+                <Input
+                  type="number"
+                  placeholder="e.g. 500"
+                  value={topUpAmount}
+                  onChange={e => setTopUpAmount(e.target.value)}
+                  className="h-14 text-2xl font-bold bg-slate-950/80 border-slate-700 text-emerald-400 placeholder:text-slate-600 focus:ring-emerald-500/50"
+                  autoFocus
+                />
+              </div>
+              <div className="space-y-2">
+                <Label className="text-slate-300 font-semibold">Note <span className="text-slate-500 opacity-60">(optional)</span></Label>
+                <Input
+                  placeholder="e.g. Weekly allowance..."
+                  value={topUpNote}
+                  onChange={e => setTopUpNote(e.target.value)}
+                  className="h-12 bg-slate-950/80 border-slate-700 text-slate-200 placeholder:text-slate-600 focus:ring-emerald-500/50"
+                />
+              </div>
+            </div>
+
+            {topUpAmount && !isNaN(parseFloat(topUpAmount)) && parseFloat(topUpAmount) > 0 && (
+              <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-xl p-3 text-sm text-emerald-400 font-medium relative z-10">
+                New balance will be: <span className="font-bold text-white ml-1">
+                  ₹{((topUpUser.walletBalance || 0) + parseFloat(topUpAmount)).toFixed(2)}
+                </span>
+              </div>
+            )}
+
+            {topUpError && (
+               <div className="bg-rose-500/10 border border-rose-500/20 rounded-xl p-3 text-sm text-rose-400 font-medium relative z-10">
+                {topUpError}
+              </div>
+            )}
+
+            <div className="flex gap-3 pt-2 pointer-events-auto relative z-10">
+              <Button
+                variant="ghost"
+                type="button"
+                className="flex-1 border border-slate-700 hover:bg-slate-800 text-slate-300 h-12 rounded-xl"
+                onClick={() => setTopUpUser(null)}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                className="flex-1 bg-gradient-to-r from-emerald-600 to-emerald-500 hover:from-emerald-500 hover:to-emerald-400 text-white font-bold h-12 rounded-xl shadow-lg shadow-emerald-500/20 transition-all border-none"
+                onClick={handleTopUp}
+                disabled={isSubmittingTopUp}
+              >
+                {isSubmittingTopUp ? <Loader2 className="w-5 h-5 animate-spin mr-2" /> : <Plus className="w-5 h-5 mr-1.5" />}
+                Add ₹{topUpAmount || "0"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Edit User Modal */}
       <Dialog open={!!editingUser} onOpenChange={(open) => !open && setEditingUser(null)}>
@@ -262,9 +445,9 @@ export default function UsersPage() {
                  <SelectTrigger className="bg-slate-950 border-slate-700">
                    <SelectValue placeholder="Select a role" />
                  </SelectTrigger>
-                 <SelectContent>
+                 <SelectContent className="bg-slate-900 border-slate-800">
                    <SelectItem value="admin">Admin</SelectItem>
-                   <SelectItem value="driver">Driver</SelectItem>
+                   <SelectItem value="driver">Employee (Driver)</SelectItem>
                  </SelectContent>
                </Select>
             </div>
@@ -289,7 +472,7 @@ export default function UsersPage() {
             <DialogDescription className="text-slate-400 pt-2 pb-4">
                Are you completely sure you want to delete <strong className="text-slate-200">{deletingUser?.name}</strong>? 
                <br/><br/>
-               If they are a driver, their ongoing portal access will be permanently revoked. However, for auditing purposes, their historical Expenses and Call Logs will remain safely stored. This action cannot be undone.
+               If they are an employee, their ongoing portal access will be permanently revoked. However, for auditing purposes, their historical Expenses and Call Logs will remain safely stored. This action cannot be undone.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>

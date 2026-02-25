@@ -21,8 +21,37 @@ export async function GET(req: Request) {
       query.companyId = new mongoose.Types.ObjectId(session.user.companyId!);
     }
 
-    const users = await User.find(query).select("-passwordHash").sort({ createdAt: -1 });
-    return NextResponse.json(users);
+    const users = await User.aggregate([
+      { $match: query },
+      { $sort: { createdAt: -1 } },
+      {
+        $lookup: {
+          from: "drivers",
+          localField: "_id",
+          foreignField: "userId",
+          as: "driverProfile"
+        }
+      },
+      {
+        $addFields: {
+          driverProfile: { $arrayElemAt: ["$driverProfile", 0] }
+        }
+      },
+      {
+        $project: {
+          passwordHash: 0,
+        }
+      }
+    ]);
+    
+    // Map the shape to explicitly surface the wallet balance at the top level for the UI
+    const usersWithWallet = users.map(u => ({
+      ...u,
+      walletBalance: u.driverProfile?.walletBalance || 0,
+      driverId: u.driverProfile?._id || null, // Needed for the topup POST route
+    }));
+
+    return NextResponse.json(usersWithWallet);
   } catch (error) {
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
   }

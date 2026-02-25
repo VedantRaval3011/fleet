@@ -69,11 +69,13 @@ export default function ExpenseMapCore({ expenses }: { expenses: any[] }) {
                     </div>
                     
                     <div className="text-3xl font-black text-amber-600">
-                      ${expense.amount.toFixed(2)}
+                      ₹{expense.amount.toFixed(2)}
                     </div>
                     
                     <div className="text-xs text-slate-500 font-medium">
-                      {format(new Date(expense.timestamp), "MMM dd, yyyy h:mm a")}
+                      {expense.timestamp && !isNaN(new Date(expense.timestamp).getTime()) 
+                        ? format(new Date(expense.timestamp), "MMM dd, yyyy h:mm a") 
+                        : "Date anavailable"}
                     </div>
 
                     {accuracyMeters > 0 && (
@@ -89,7 +91,7 @@ export default function ExpenseMapCore({ expenses }: { expenses: any[] }) {
                     {expense.walletBalanceAfter !== undefined && (
                       <div className="text-xs bg-slate-100 p-2 rounded-md border border-slate-200">
                         Balance after transaction:<br/>
-                        <strong className="text-indigo-600 text-sm">${expense.walletBalanceAfter.toFixed(2)}</strong>
+                        <strong className="text-indigo-600 text-sm">₹{expense.walletBalanceAfter.toFixed(2)}</strong>
                       </div>
                     )}
 

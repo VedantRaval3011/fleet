@@ -9,6 +9,8 @@ import Expense from "@/models/Expense";
 import connectToDatabase from "@/lib/db";
 import { format } from "date-fns";
 
+import WalletTransaction from "@/models/WalletTransaction";
+
 export default async function DriverDashboard() {
   const session = await getServerSession(authOptions);
   
@@ -22,6 +24,28 @@ export default async function DriverDashboard() {
     .sort({ timestamp: -1 })
     .limit(5);
 
+  // Calculate current month's spent amount (approved deductions)
+  const startOfMonth = new Date();
+  startOfMonth.setDate(1);
+  startOfMonth.setHours(0, 0, 0, 0);
+
+  const monthDeductions = await WalletTransaction.aggregate([
+    { 
+      $match: { 
+        driverId: driver?._id, 
+        type: 'deduction',
+        timestamp: { $gte: startOfMonth }
+      } 
+    },
+    { $group: { _id: null, total: { $sum: "$amount" } } }
+  ]);
+  
+  const spentThisMonth = monthDeductions[0]?.total || 0;
+  const currentBalance = driver?.walletBalance || 0;
+  const totalAllocated = currentBalance + spentThisMonth; // Approximation of their "budget" for visual purposes
+  const spendPercentage = totalAllocated > 0 ? (spentThisMonth / totalAllocated) * 100 : 0;
+  const isLowBalance = currentBalance > 0 && currentBalance < 500; // Warning threshold
+
   return (
     <div className="space-y-6">
       <div className="space-y-1">
@@ -29,15 +53,33 @@ export default async function DriverDashboard() {
         <p className="text-slate-400 text-sm">Welcome to your driver portal.</p>
       </div>
 
-      <Card className="bg-gradient-to-br from-indigo-900 to-slate-900 border-indigo-500/30 overflow-hidden relative">
+      <Card className={`relative overflow-hidden border ${isLowBalance ? 'bg-gradient-to-br from-rose-950 to-slate-900 border-rose-500/50' : 'bg-gradient-to-br from-indigo-900 to-slate-900 border-indigo-500/30'}`}>
         <div className="absolute top-0 right-0 p-4 opacity-10">
           <Wallet className="w-24 h-24" />
         </div>
-        <CardContent className="p-6 relative z-10">
-          <p className="text-indigo-200 text-sm font-medium mb-1">Your Wallet Balance</p>
-          <h2 className="text-4xl font-extrabold text-white tracking-tight">
-            ${driver?.walletBalance?.toFixed(2) || "0.00"}
-          </h2>
+        <CardContent className="p-6 relative z-10 space-y-4">
+          <div>
+            <p className={`${isLowBalance ? 'text-rose-200' : 'text-indigo-200'} text-sm font-medium mb-1 flex items-center gap-2`}>
+              Available Balance
+              {isLowBalance && <span className="text-xs bg-rose-500/20 text-rose-400 px-2 py-0.5 rounded-full border border-rose-500/30">Low</span>}
+            </p>
+            <h2 className={`text-4xl font-extrabold tracking-tight ${isLowBalance ? 'text-rose-400' : 'text-white'}`}>
+              ₹{currentBalance.toFixed(2)}
+            </h2>
+          </div>
+
+          <div className="space-y-2 pt-2">
+            <div className="flex justify-between text-xs">
+              <span className="text-slate-400">Spent this month</span>
+              <span className="text-slate-300 font-medium">₹{spentThisMonth.toFixed(2)}</span>
+            </div>
+            <div className="h-2 w-full bg-slate-800 rounded-full overflow-hidden flex">
+              <div 
+                className={`h-full ${isLowBalance ? 'bg-rose-500' : 'bg-indigo-500'}`} 
+                style={{ width: `${Math.min(100, Math.max(5, spendPercentage))}%` }} 
+              />
+            </div>
+          </div>
         </CardContent>
       </Card>
 
@@ -67,7 +109,7 @@ export default async function DriverDashboard() {
                     <Receipt className="w-5 h-5" />
                   </div>
                   <div>
-                    <p className="font-semibold text-white">${expense.amount.toFixed(2)}</p>
+                    <p className="font-semibold text-white">₹{expense.amount.toFixed(2)}</p>
                     <p className="text-xs text-slate-400">{format(new Date(expense.timestamp), "MMM dd, yyyy")}</p>
                   </div>
                 </div>

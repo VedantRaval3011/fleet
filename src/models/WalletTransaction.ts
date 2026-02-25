@@ -6,6 +6,7 @@ export interface IWalletTransaction extends Document {
   amount: number;
   type: 'addition' | 'deduction';
   relatedExpenseId?: mongoose.Types.ObjectId;
+  note?: string;
   timestamp: Date;
 }
 
@@ -16,6 +17,7 @@ const WalletTransactionSchema = new Schema(
     amount: { type: Number, required: true },
     type: { type: String, enum: ['addition', 'deduction'], required: true },
     relatedExpenseId: { type: Schema.Types.ObjectId, ref: 'Expense' },
+    note: { type: String },
     timestamp: { type: Date, default: Date.now },
   },
   { timestamps: true }

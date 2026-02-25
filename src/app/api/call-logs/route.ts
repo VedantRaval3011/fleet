@@ -66,3 +66,90 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
   }
 }
+
+export async function PUT(req: Request) {
+  try {
+    const session = await getServerSession(authOptions);
+    if (!session?.user?.companyId && session?.user?.role !== "super_admin") {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    const data = await req.json();
+    const { _id, employeeName, contactName, phoneNumber, callType, duration, timestamp } = data;
+
+    if (!_id) {
+      return NextResponse.json({ error: "Call log ID is required" }, { status: 400 });
+    }
+
+    await connectToDatabase();
+    
+    // Admins can only edit logs in their company
+    const query: any = { _id: new mongoose.Types.ObjectId(_id) };
+    if (session.user.role !== "super_admin") {
+      query.$or = [
+        { companyId: new mongoose.Types.ObjectId(session.user.companyId!) },
+        { companyId: { $exists: false } }
+      ];
+    }
+
+    const updateData: any = {};
+    if (employeeName !== undefined) updateData.employeeName = employeeName;
+    if (contactName !== undefined) updateData.contactName = contactName;
+    if (phoneNumber !== undefined) updateData.phoneNumber = phoneNumber;
+    if (callType !== undefined) updateData.callType = callType;
+    if (duration !== undefined) updateData.duration = duration;
+    if (timestamp !== undefined) updateData.timestamp = new Date(timestamp);
+
+    const log = await CallLog.findOneAndUpdate(query, updateData, { new: true });
+    
+    if (!log) {
+      return NextResponse.json({ error: "Call log not found or unauthorized" }, { status: 404 });
+    }
+
+    return NextResponse.json(log);
+  } catch (error) {
+    console.error("Failed to update call log:", error);
+    // Ignore duplicate key errors if index complains (rare but possible if editing to same thing as another record)
+    if ((error as any).code === 11000) {
+      return NextResponse.json({ error: " A log with these exact details already exists." }, { status: 400 });
+    }
+    return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
+  }
+}
+
+export async function DELETE(req: Request) {
+  try {
+    const session = await getServerSession(authOptions);
+    if (!session?.user?.companyId && session?.user?.role !== "super_admin") {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    const { searchParams } = new URL(req.url);
+    const id = searchParams.get("id");
+
+    if (!id) {
+      return NextResponse.json({ error: "Call log ID is required" }, { status: 400 });
+    }
+
+    await connectToDatabase();
+    
+    const query: any = { _id: new mongoose.Types.ObjectId(id) };
+    if (session.user.role !== "super_admin") {
+       query.$or = [
+        { companyId: new mongoose.Types.ObjectId(session.user.companyId!) },
+        { companyId: { $exists: false } }
+      ];
+    }
+
+    const result = await CallLog.deleteOne(query);
+
+    if (result.deletedCount === 0) {
+      return NextResponse.json({ error: "Call log not found or unauthorized" }, { status: 404 });
+    }
+
+    return NextResponse.json({ message: "Call log deleted successfully" });
+  } catch (error) {
+    console.error("Failed to delete call log:", error);
+    return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
+  }
+}
