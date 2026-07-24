@@ -22,8 +22,12 @@ interface EnrollmentCode {
   employeeName?: string;
   employeeId?: string;
   role: "driver" | "employee";
-  vehicle?: string;
-  capabilities?: string[];
+  vehicle?: string | { id?: string; registration?: string };
+  capabilities?: {
+    callMonitoring?: boolean;
+    locationTracking?: boolean;
+    expenseManagement?: boolean;
+  } | string[];
   expiresAt?: string;
   usedAt?: string;
   revoked: boolean;
@@ -35,7 +39,9 @@ const defaultForm = {
   employeeId: "",
   role: "driver" as "driver" | "employee",
   vehicle: "",
-  capabilities: "",
+  callMonitoring: true,
+  locationTracking: true,
+  expenseManagement: true,
   expiresInHours: 48,
 };
 
@@ -60,11 +66,23 @@ export default function EnrollmentPage() {
   useEffect(() => { fetchCodes(); }, [fetchCodes]);
 
   const handleSubmit = async () => {
+    if (!form.employeeName.trim()) {
+      setError("Employee name is required");
+      return;
+    }
     setIsSubmitting(true); setError("");
     try {
       const body = {
-        ...form,
-        capabilities: form.capabilities ? form.capabilities.split(",").map((c) => c.trim()).filter(Boolean) : [],
+        employeeName: form.employeeName.trim(),
+        employeeId: form.employeeId.trim(),
+        role: form.role,
+        vehicle: form.vehicle.trim(),
+        expiresInHours: form.expiresInHours,
+        capabilities: {
+          callMonitoring: form.callMonitoring,
+          locationTracking: form.locationTracking,
+          expenseManagement: form.expenseManagement,
+        },
       };
       const res = await fetch("/api/enrollment-codes", {
         method: "POST",
@@ -151,14 +169,32 @@ export default function EnrollmentPage() {
                   />
                 </div>
               </div>
-              <div className="space-y-1">
-                <label className="text-sm text-slate-300">Capabilities <span className="text-slate-500">(comma-separated)</span></label>
-                <Input
-                  placeholder="e.g. call_logs,location"
-                  value={form.capabilities}
-                  onChange={(e) => setForm((f) => ({ ...f, capabilities: e.target.value }))}
-                  className="bg-slate-950 border-slate-700 text-slate-200 placeholder:text-slate-600"
-                />
+              <div className="space-y-2">
+                <label className="text-sm text-slate-300">Capabilities</label>
+                <label className="flex items-center gap-2 text-sm text-slate-200">
+                  <input
+                    type="checkbox"
+                    checked={form.callMonitoring}
+                    onChange={(e) => setForm((f) => ({ ...f, callMonitoring: e.target.checked }))}
+                  />
+                  Call monitoring
+                </label>
+                <label className="flex items-center gap-2 text-sm text-slate-200">
+                  <input
+                    type="checkbox"
+                    checked={form.locationTracking}
+                    onChange={(e) => setForm((f) => ({ ...f, locationTracking: e.target.checked }))}
+                  />
+                  GPS / location tracking
+                </label>
+                <label className="flex items-center gap-2 text-sm text-slate-200">
+                  <input
+                    type="checkbox"
+                    checked={form.expenseManagement}
+                    onChange={(e) => setForm((f) => ({ ...f, expenseManagement: e.target.checked }))}
+                  />
+                  Expense management
+                </label>
               </div>
               <div className="space-y-1">
                 <label className="text-sm text-slate-300">Expires in (hours)</label>
@@ -256,7 +292,11 @@ export default function EnrollmentPage() {
                       {c.role}
                     </Badge>
                   </TableCell>
-                  <TableCell className="text-slate-400 font-mono text-sm">{c.vehicle || <span className="text-slate-600">—</span>}</TableCell>
+                  <TableCell className="text-slate-400 font-mono text-sm">
+                    {typeof c.vehicle === "string"
+                      ? c.vehicle
+                      : c.vehicle?.registration || c.vehicle?.id || <span className="text-slate-600">—</span>}
+                  </TableCell>
                   <TableCell>
                     <Badge variant="outline" className={cls}>{label}</Badge>
                   </TableCell>

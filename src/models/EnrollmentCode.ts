@@ -1,13 +1,19 @@
 import mongoose, { Schema, Document } from 'mongoose';
 
+export interface IEnrollmentCapabilities {
+  callMonitoring: boolean;
+  locationTracking: boolean;
+  expenseManagement: boolean;
+}
+
 export interface IEnrollmentCode extends Document {
   code: string;
   companyId: mongoose.Types.ObjectId;
   employeeId?: string;
   employeeName?: string;
   role: 'driver' | 'employee';
-  capabilities?: string[];
-  vehicle?: string;
+  capabilities: IEnrollmentCapabilities;
+  vehicle?: { id?: string; registration?: string };
   serverUrl?: string;
   apiKey?: string;
   usedAt?: Date;
@@ -25,8 +31,15 @@ const EnrollmentCodeSchema = new Schema(
     employeeId: { type: String },
     employeeName: { type: String },
     role: { type: String, enum: ['driver', 'employee'], default: 'driver' },
-    capabilities: [{ type: String }],
-    vehicle: { type: String },
+    capabilities: {
+      callMonitoring: { type: Boolean, default: true },
+      locationTracking: { type: Boolean, default: false },
+      expenseManagement: { type: Boolean, default: false },
+    },
+    vehicle: {
+      id: { type: String },
+      registration: { type: String },
+    },
     serverUrl: { type: String },
     apiKey: { type: String },
     usedAt: { type: Date },
@@ -34,7 +47,7 @@ const EnrollmentCodeSchema = new Schema(
     revoked: { type: Boolean, default: false },
     driverId: { type: Schema.Types.ObjectId, ref: 'Driver' },
   },
-  { timestamps: true }
+  { timestamps: true, collection: 'enrollmentcodes' }
 );
 
 export default mongoose.models.EnrollmentCode ||

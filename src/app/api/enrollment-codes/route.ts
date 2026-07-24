@@ -10,7 +10,47 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 function generateCode(): string {
-  return crypto.randomBytes(4).toString("hex").toUpperCase(); // 8 char hex
+  return crypto.randomBytes(4).toString("hex").toUpperCase();
+}
+
+function normalizeCapabilities(raw: unknown) {
+  if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+    const o = raw as Record<string, unknown>;
+    return {
+      callMonitoring: Boolean(o.callMonitoring),
+      locationTracking: Boolean(o.locationTracking),
+      expenseManagement: Boolean(o.expenseManagement),
+    };
+  }
+  // Legacy comma-string / string[] from older UI
+  const list = Array.isArray(raw)
+    ? raw.map(String)
+    : typeof raw === "string"
+      ? raw.split(",").map((s) => s.trim()).filter(Boolean)
+      : [];
+  const lower = list.map((s) => s.toLowerCase());
+  return {
+    callMonitoring:
+      lower.some((s) => s.includes("call")) || lower.length === 0,
+    locationTracking: lower.some((s) => s.includes("location") || s.includes("gps")),
+    expenseManagement: lower.some((s) => s.includes("expense")),
+  };
+}
+
+function normalizeVehicle(raw: unknown) {
+  if (!raw) return undefined;
+  if (typeof raw === "string") {
+    const registration = raw.trim();
+    if (!registration) return undefined;
+    return { id: registration, registration };
+  }
+  if (typeof raw === "object") {
+    const o = raw as { id?: string; registration?: string };
+    const registration = (o.registration || o.id || "").trim();
+    if (!registration) return undefined;
+    return { id: o.id || registration, registration };
+  }
+  return undefined;
 }
 
 export async function GET() {
@@ -25,7 +65,7 @@ export async function GET() {
 
     await connectToDatabase();
 
-    const query: any = {};
+    const query: Record<string, unknown> = {};
     if (session.user.role !== "super_admin") {
       query.companyId = new mongoose.Types.ObjectId(session.user.companyId!);
     }
@@ -49,68 +89,57 @@ export async function POST(req: Request) {
     }
 
     const body = await req.json();
-    const { employeeId, employeeName, role = "driver", capabilities, vehicle, serverUrl, expiresInHours = 48 } = body;
+    const {
+      employeeId,
+      employeeName,
+      role = "driver",
+      capabilities,
+      vehicle,
+      expiresInHours = 48,
+    } = body;
+
+    if (!employeeName?.trim()) {
+      return NextResponse.json({ error: "Employee name is required" }, { status: 400 });
+    }
 
     await connectToDatabase();
 
     const companyId = new mongoose.Types.ObjectId(session.user.companyId!);
+    const caps = normalizeCapabilities(capabilities);
+    const vehicleObj = normalizeVehicle(vehicle);
 
-    // Generate unique code (retry up to 5 times)
     let code = "";
     for (let i = 0; i < 5; i++) {
       const candidate = generateCode();
       const exists = await EnrollmentCode.findOne({ code: candidate });
-      if (!exists) { code = candidate; break; }
+      if (!exists) {
+        code = candidate;
+        break;
+      }
     }
     if (!code) {
       return NextResponse.json({ error: "Could not generate unique code" }, { status: 500 });
     }
 
-    const expiresAt = new Date(Date.now() + expiresInHours * 60 * 60 * 1000);
-
-    const backendUrl = process.env.BACKEND_URL?.trim().replace(/\/$/, "");
+    const expiresAt = new Date(Date.now() + Number(expiresInHours || 48) * 60 * 60 * 1000);
+    const serverUrl = process.env.BACKEND_URL?.trim().replace(/\/$/, "") || "";
     const apiKey = process.env.BACKEND_API_KEY ?? "";
 
-    // Write to shared Mongo via Mongoose (Express reads same collection)
     const enrollmentCode = await EnrollmentCode.create({
       code,
       companyId,
-      employeeId,
-      employeeName,
-      role,
-      capabilities: capabilities ?? [],
-      vehicle,
+      employeeId: employeeId?.trim() || code,
+      employeeName: employeeName.trim(),
+      role: role === "employee" ? "employee" : "driver",
+      capabilities: caps,
+      vehicle: vehicleObj,
       serverUrl,
+      apiKey,
       expiresAt,
       revoked: false,
     });
 
-    // Also notify Express backend if configured (optional — same Mongo, so Express can read directly)
-    if (backendUrl) {
-      try {
-        await fetch(`${backendUrl}/api/enrollment/codes`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "X-API-Key": apiKey,
-          },
-          body: JSON.stringify({
-            code,
-            companyId: companyId.toString(),
-            employeeId,
-            employeeName,
-            role,
-            capabilities: capabilities ?? [],
-            vehicle,
-            serverUrl,
-            expiresAt,
-          }),
-        });
-      } catch {
-        // Non-fatal — the code was already written to shared Mongo
-      }
-    }
-
+    // Shared Mongo is enough — Android redeems against Express which reads the same collection.
     return NextResponse.json(enrollmentCode, { status: 201 });
   } catch (error) {
     console.error("POST /api/enrollment-codes error:", error);
