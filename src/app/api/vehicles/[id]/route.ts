@@ -3,7 +3,6 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import connectToDatabase from "@/lib/db";
 import Vehicle from "@/models/Vehicle";
-import mongoose from "mongoose";
 
 export const dynamic = "force-dynamic";
 
@@ -11,8 +10,12 @@ function isAdmin(role?: string) {
   return role === "admin" || role === "super_admin";
 }
 
-export async function PUT(req: Request, { params }: { params: { id: string } }) {
+export async function PUT(
+  req: Request,
+  { params }: { params: Promise<{ id: string }> }
+) {
   try {
+    const { id } = await params;
     const session = await getServerSession(authOptions);
     if (!isAdmin(session?.user?.role)) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
@@ -26,7 +29,7 @@ export async function PUT(req: Request, { params }: { params: { id: string } }) 
       update.vehicleModel = body.model;
       delete update.model;
     }
-    const vehicle = await Vehicle.findByIdAndUpdate(params.id, update, { new: true });
+    const vehicle = await Vehicle.findByIdAndUpdate(id, update, { new: true });
     if (!vehicle) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
     // Company scope check for non-super_admin
@@ -44,8 +47,12 @@ export async function PUT(req: Request, { params }: { params: { id: string } }) 
   }
 }
 
-export async function DELETE(_req: Request, { params }: { params: { id: string } }) {
+export async function DELETE(
+  _req: Request,
+  { params }: { params: Promise<{ id: string }> }
+) {
   try {
+    const { id } = await params;
     const session = await getServerSession(authOptions);
     if (!isAdmin(session?.user?.role)) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
@@ -53,7 +60,7 @@ export async function DELETE(_req: Request, { params }: { params: { id: string }
 
     await connectToDatabase();
 
-    const vehicle = await Vehicle.findById(params.id);
+    const vehicle = await Vehicle.findById(id);
     if (!vehicle) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
     if (
@@ -63,7 +70,7 @@ export async function DELETE(_req: Request, { params }: { params: { id: string }
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
-    await Vehicle.findByIdAndDelete(params.id);
+    await Vehicle.findByIdAndDelete(id);
     return NextResponse.json({ success: true });
   } catch (error) {
     console.error("DELETE /api/vehicles/[id] error:", error);
