@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { LayoutDashboard, Users, Map, Navigation, CreditCard, Phone, UserCog, FileText, X, Activity, Contact, Trash2, PieChart, BrainCircuit, BotMessageSquare, ScrollText, UserCheck, Smartphone, PhoneCall, Building2, UsersRound, ChevronLeft, ChevronRight } from "lucide-react";
+import { LayoutDashboard, Users, Map, Navigation, CreditCard, Phone, UserCog, FileText, X, Activity, Contact, Trash2, PieChart, BrainCircuit, BotMessageSquare, ScrollText, UserCheck, Smartphone, PhoneCall, Building2, UsersRound, ChevronLeft, ChevronRight, Car, QrCode, Satellite } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useSidebar } from "./SidebarContext";
 import { useCallback, useEffect, useMemo, useRef, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
@@ -10,8 +10,11 @@ import { useCallback, useEffect, useMemo, useRef, type CSSProperties, type Point
 const sidebarNavItems = [
   { title: "Dashboard", href: "/", icon: LayoutDashboard },
   { title: "Drivers", href: "/drivers", icon: Users },
-  { title: "Live Map", href: "/live-map", icon: Map },
-  { title: "Trips", href: "/trips", icon: Navigation },
+  { title: "Fleet GPS", href: "/fleet-map", icon: Satellite },
+  { title: "Route History", href: "/trips", icon: Navigation },
+  { title: "Vehicles", href: "/vehicles", icon: Car },
+  { title: "Device Enrollment", href: "/enrollment", icon: QrCode },
+  { title: "Expense Map", href: "/live-map", icon: Map },
   { title: "Expenses", href: "/expenses", icon: CreditCard },
   { title: "Call Logs", href: "/call-logs", icon: Phone },
   { title: "Call Tracker", href: "/call-tracker", icon: PhoneCall },

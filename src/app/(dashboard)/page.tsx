@@ -2,7 +2,7 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import connectToDatabase from "@/lib/db";
 import Driver from "@/models/Driver";
-import Trip from "@/models/Trip";
+import LocationSession from "@/models/LocationSession";
 import Expense from "@/models/Expense";
 import CallLog from "@/models/CallLog";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -19,7 +19,7 @@ async function getDashboardStats(companyId: string) {
 
   const [activeDrivers, tripsToday, expensesToday, allDrivers, callsToday] = await Promise.all([
     Driver.countDocuments({ companyId: compId, status: "active" }),
-    Trip.countDocuments({ companyId: compId, startTime: { $gte: today } }),
+    LocationSession.countDocuments({ companyId: companyId, startedAt: { $gte: today } }),
     Expense.aggregate([
       { $match: { companyId: compId, timestamp: { $gte: today }, status: "approved" } },
       { $group: { _id: null, total: { $sum: "$amount" } } }
