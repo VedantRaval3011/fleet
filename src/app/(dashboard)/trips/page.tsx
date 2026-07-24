@@ -5,6 +5,13 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Loader2, Route, RefreshCw, MapPin } from "lucide-react";
 import { format } from "date-fns";
 import dynamic from "next/dynamic";
@@ -33,6 +40,14 @@ interface LocationPoint {
   recordedAt: string;
   speedMetersPerSecond?: number;
 }
+
+interface FleetDevice {
+  deviceId: string;
+  employeeName?: string;
+  vehicle?: string;
+}
+
+const ALL_DEVICES = "__all__";
 
 const STATUS_COLORS: Record<string, string> = {
   ACTIVE: "border-emerald-500/50 text-emerald-400 bg-emerald-500/10",
@@ -68,6 +83,35 @@ export default function RouteHistoryPage() {
   const [isLoadingPoints, setIsLoadingPoints] = useState(false);
   const [filterDevice, setFilterDevice] = useState("");
   const [filterDate, setFilterDate] = useState("");
+  const [devices, setDevices] = useState<FleetDevice[]>([]);
+
+  // Populate the user/device picker so admins select a driver instead of
+  // typing a raw device ID.
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch("/api/fleet-map");
+        if (res.ok) {
+          const data: FleetDevice[] = await res.json();
+          setDevices(
+            [...data].sort((a, b) =>
+              (a.employeeName || a.deviceId).localeCompare(b.employeeName || b.deviceId)
+            )
+          );
+        }
+      } catch {}
+    })();
+  }, []);
+
+  const deviceLabel = (d: FleetDevice) =>
+    d.employeeName?.trim() ||
+    (d.vehicle ? `Vehicle ${d.vehicle}` : `Device ${d.deviceId.slice(0, 8)}…`);
+
+  const deviceById = new Map(devices.map((d) => [d.deviceId, d]));
+  const sessionOwner = (deviceId: string) => {
+    const d = deviceById.get(deviceId);
+    return d ? deviceLabel(d) : deviceId;
+  };
 
   const fetchSessions = useCallback(async () => {
     setIsLoading(true);
@@ -116,12 +160,23 @@ export default function RouteHistoryPage() {
 
       {/* Filters */}
       <div className="flex flex-wrap gap-3">
-        <Input
-          placeholder="Filter by Device ID"
-          value={filterDevice}
-          onChange={(e) => setFilterDevice(e.target.value)}
-          className="w-52 bg-slate-900 border-slate-700 text-slate-200 placeholder:text-slate-600"
-        />
+        <Select
+          value={filterDevice || ALL_DEVICES}
+          onValueChange={(v) => setFilterDevice(v === ALL_DEVICES ? "" : v)}
+        >
+          <SelectTrigger className="w-64 bg-slate-900 border-slate-700 text-slate-200">
+            <SelectValue placeholder="Select a driver" />
+          </SelectTrigger>
+          <SelectContent className="bg-slate-900 border-slate-700 text-slate-200">
+            <SelectItem value={ALL_DEVICES}>All drivers</SelectItem>
+            {devices.map((d) => (
+              <SelectItem key={d.deviceId} value={d.deviceId}>
+                {deviceLabel(d)}
+                {d.vehicle && d.employeeName ? ` · ${d.vehicle}` : ""}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
         <Input
           type="date"
           value={filterDate}
@@ -155,8 +210,8 @@ export default function RouteHistoryPage() {
             >
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0">
-                  <p className="font-mono text-xs text-slate-400 truncate">{s.deviceId}</p>
-                  <p className="font-semibold text-white text-sm mt-1">
+                  <p className="font-semibold text-white text-sm truncate">{sessionOwner(s.deviceId)}</p>
+                  <p className="text-xs text-slate-400 mt-1">
                     {format(new Date(s.startedAt), "MMM dd, HH:mm")}
                   </p>
                 </div>
