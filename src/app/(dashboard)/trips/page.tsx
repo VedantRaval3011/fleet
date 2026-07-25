@@ -5,13 +5,6 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { Loader2, Route, RefreshCw, MapPin } from "lucide-react";
 import { format } from "date-fns";
 import dynamic from "next/dynamic";
@@ -47,8 +40,6 @@ interface FleetDevice {
   vehicle?: string;
 }
 
-const ALL_DEVICES = "__all__";
-
 const STATUS_COLORS: Record<string, string> = {
   ACTIVE: "border-emerald-500/50 text-emerald-400 bg-emerald-500/10",
   COMPLETED: "border-indigo-500/50 text-indigo-400 bg-indigo-500/10",
@@ -81,48 +72,45 @@ export default function RouteHistoryPage() {
   const [selectedSession, setSelectedSession] = useState<LocationSession | null>(null);
   const [points, setPoints] = useState<LocationPoint[]>([]);
   const [isLoadingPoints, setIsLoadingPoints] = useState(false);
-  const [filterDevice, setFilterDevice] = useState("");
   const [filterDate, setFilterDate] = useState("");
   const [devices, setDevices] = useState<FleetDevice[]>([]);
 
-  // Populate the user/device picker so admins select a driver instead of
-  // typing a raw device ID.
+  // Resolve a device -> employee name where we have it, purely to enrich the
+  // label. Sessions still show for everyone regardless of this lookup.
   useEffect(() => {
     (async () => {
       try {
         const res = await fetch("/api/fleet-map");
         if (res.ok) {
           const data: FleetDevice[] = await res.json();
-          setDevices(
-            [...data].sort((a, b) =>
-              (a.employeeName || a.deviceId).localeCompare(b.employeeName || b.deviceId)
-            )
-          );
+          setDevices(data);
         }
       } catch {}
     })();
   }, []);
 
-  const deviceLabel = (d: FleetDevice) =>
-    d.employeeName?.trim() ||
-    (d.vehicle ? `Vehicle ${d.vehicle}` : `Device ${d.deviceId.slice(0, 8)}…`);
-
   const deviceById = new Map(devices.map((d) => [d.deviceId, d]));
-  const sessionOwner = (deviceId: string) => {
-    const d = deviceById.get(deviceId);
-    return d ? deviceLabel(d) : deviceId;
+
+  // Prefer the employee id carried on the session itself. Fall back to the
+  // resolved employee name / vehicle when an id isn't recorded.
+  const sessionOwner = (s: LocationSession) => {
+    if (s.employeeId) return `Employee ${s.employeeId}`;
+    const d = deviceById.get(s.deviceId);
+    if (d?.employeeName?.trim()) return d.employeeName.trim();
+    if (s.vehicleId) return `Vehicle ${s.vehicleId}`;
+    if (d?.vehicle) return `Vehicle ${d.vehicle}`;
+    return `Device ${s.deviceId.slice(0, 8)}…`;
   };
 
   const fetchSessions = useCallback(async () => {
     setIsLoading(true);
     try {
       const params = new URLSearchParams({ limit: "100" });
-      if (filterDevice) params.set("deviceId", filterDevice);
       const res = await fetch(`/api/location/sessions?${params}`);
       if (res.ok) setSessions(await res.json());
     } catch {}
     finally { setIsLoading(false); }
-  }, [filterDevice]);
+  }, []);
 
   useEffect(() => { fetchSessions(); }, [fetchSessions]);
 
@@ -158,33 +146,16 @@ export default function RouteHistoryPage() {
         </Button>
       </div>
 
-      {/* Filters */}
+      {/* Filters — date only. Sessions are shown for every employee. */}
       <div className="flex flex-wrap gap-3">
-        <Select
-          value={filterDevice || ALL_DEVICES}
-          onValueChange={(v) => setFilterDevice(v === ALL_DEVICES ? "" : v)}
-        >
-          <SelectTrigger className="w-64 bg-slate-900 border-slate-700 text-slate-200">
-            <SelectValue placeholder="Select a driver" />
-          </SelectTrigger>
-          <SelectContent className="bg-slate-900 border-slate-700 text-slate-200">
-            <SelectItem value={ALL_DEVICES}>All drivers</SelectItem>
-            {devices.map((d) => (
-              <SelectItem key={d.deviceId} value={d.deviceId}>
-                {deviceLabel(d)}
-                {d.vehicle && d.employeeName ? ` · ${d.vehicle}` : ""}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
         <Input
           type="date"
           value={filterDate}
           onChange={(e) => setFilterDate(e.target.value)}
           className="w-44 bg-slate-900 border-slate-700 text-slate-200"
         />
-        {(filterDevice || filterDate) && (
-          <Button variant="outline" size="sm" className="border-slate-700 text-slate-400 bg-transparent" onClick={() => { setFilterDevice(""); setFilterDate(""); }}>
+        {filterDate && (
+          <Button variant="outline" size="sm" className="border-slate-700 text-slate-400 bg-transparent" onClick={() => setFilterDate("")}>
             Clear
           </Button>
         )}
@@ -210,7 +181,7 @@ export default function RouteHistoryPage() {
             >
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0">
-                  <p className="font-semibold text-white text-sm truncate">{sessionOwner(s.deviceId)}</p>
+                  <p className="font-semibold text-white text-sm truncate">{sessionOwner(s)}</p>
                   <p className="text-xs text-slate-400 mt-1">
                     {format(new Date(s.startedAt), "MMM dd, HH:mm")}
                   </p>
