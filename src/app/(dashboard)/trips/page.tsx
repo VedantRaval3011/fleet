@@ -18,6 +18,9 @@ import {
   Clock,
   Ruler,
   Flag,
+  ChevronDown,
+  ChevronUp,
+  MousePointerClick,
 } from "lucide-react";
 import { format } from "date-fns";
 import dynamic from "next/dynamic";
@@ -44,6 +47,12 @@ interface LocationPoint {
   longitude: number;
   recordedAt: string;
   speedMetersPerSecond?: number;
+  accuracyMeters?: number;
+  bearingDegrees?: number;
+  altitudeMeters?: number;
+  batteryPercent?: number;
+  provider?: string;
+  isMockLocation?: boolean;
 }
 
 interface FleetDevice {
@@ -109,6 +118,7 @@ export default function RouteHistoryPage() {
   const [points, setPoints] = useState<LocationPoint[]>([]);
   const [sessions, setSessions] = useState<LocationSession[]>([]);
   const [selectedSubTrip, setSelectedSubTrip] = useState<string | null>(null); // sessionId or null = all
+  const [tripsOpen, setTripsOpen] = useState(true);
 
   const [startPlace, setStartPlace] = useState<string>("");
   const [endPlace, setEndPlace] = useState<string>("");
@@ -142,8 +152,7 @@ export default function RouteHistoryPage() {
 
   // Points shown for the currently selected sub-trip (or the whole window).
   const displayedPoints = useMemo(
-    () =>
-      selectedSubTrip ? points.filter((p) => p.sessionId === selectedSubTrip) : points,
+    () => (selectedSubTrip ? points.filter((p) => p.sessionId === selectedSubTrip) : points),
     [points, selectedSubTrip]
   );
 
@@ -204,7 +213,6 @@ export default function RouteHistoryPage() {
 
       if (sesRes.ok) {
         const all: LocationSession[] = await sesRes.json();
-        // Sessions overlapping the selected window.
         const overlap = all.filter((s) => {
           const sStart = new Date(s.startedAt).getTime();
           const sEnd = s.stoppedAt ? new Date(s.stoppedAt).getTime() : Date.now();
@@ -213,7 +221,6 @@ export default function RouteHistoryPage() {
         setSessions(overlap);
       }
 
-      // Reverse-geocode endpoints (2 requests, graceful fallback).
       if (pts.length > 0) {
         const first = pts[0];
         const last = pts[pts.length - 1];
@@ -267,7 +274,7 @@ export default function RouteHistoryPage() {
 
   const exportCsv = () => {
     if (displayedPoints.length === 0) return;
-    const header = "sequence,recordedAt,latitude,longitude,speed_kmh";
+    const header = "sequence,recordedAt,latitude,longitude,speed_kmh,battery_percent,accuracy_m";
     const rows = displayedPoints.map((p) =>
       [
         p.sequenceNumber,
@@ -275,6 +282,8 @@ export default function RouteHistoryPage() {
         p.latitude,
         p.longitude,
         p.speedMetersPerSecond != null ? (p.speedMetersPerSecond * 3.6).toFixed(1) : "",
+        p.batteryPercent ?? "",
+        p.accuracyMeters ?? "",
       ].join(",")
     );
     const blob = new Blob([[header, ...rows].join("\n")], { type: "text/csv;charset=utf-8;" });
@@ -287,16 +296,22 @@ export default function RouteHistoryPage() {
   };
 
   const selectedLabel = deviceOptions.find((o) => o.value === selectedDeviceId)?.label ?? "";
+  const playbackTime =
+    playbackIndex != null && displayedPoints[playbackIndex]
+      ? format(new Date(displayedPoints[playbackIndex].recordedAt), "HH:mm:ss")
+      : displayedPoints[0]
+      ? format(new Date(displayedPoints[0].recordedAt), "HH:mm:ss")
+      : "--:--:--";
+
+  const hasRoute = displayedPoints.length > 0 && !!stats;
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
-        <div>
-          <h1 className="text-3xl font-bold tracking-tight text-white">Route History</h1>
-          <p className="text-slate-400 mt-1">
-            Pick an employee, a day and a time interval to replay their driven route.
-          </p>
-        </div>
+    <div className="space-y-4">
+      <div>
+        <h1 className="text-3xl font-bold tracking-tight text-white">Route History</h1>
+        <p className="text-slate-400 mt-1">
+          Pick an employee, a day and a time interval to replay their driven route.
+        </p>
       </div>
 
       {/* Control bar */}
@@ -361,133 +376,129 @@ export default function RouteHistoryPage() {
         {formError && <p className="text-sm text-rose-400 mt-2">{formError}</p>}
       </Card>
 
-      <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
-        {/* Left: trips in interval */}
-        <div className="lg:col-span-2 space-y-3">
-          <div className="flex items-center justify-between">
-            <h2 className="text-sm font-semibold text-slate-300">
-              Trips in interval {sessions.length > 0 && `(${sessions.length})`}
-            </h2>
-            {sessions.length > 0 && (
-              <button
-                onClick={() => setSelectedSubTrip(null)}
-                className={`text-xs px-2 py-1 rounded-md border transition-colors ${
-                  selectedSubTrip === null
-                    ? "border-indigo-500/50 text-indigo-300 bg-indigo-600/20"
-                    : "border-slate-700 text-slate-400 hover:bg-slate-800"
-                }`}
-              >
-                All
-              </button>
-            )}
+      {/* Stats strip */}
+      {hasRoute && (
+        <Card className="bg-slate-900 border-slate-800 p-4">
+          <div className="flex flex-wrap items-center gap-x-8 gap-y-4">
+            <Metric icon={<Ruler className="w-3.5 h-3.5" />} label="Distance" value={`${stats.distance.toFixed(2)} km`} />
+            <Metric icon={<Clock className="w-3.5 h-3.5" />} label="Duration" value={stats.duration} />
+            <Metric icon={<MapPin className="w-3.5 h-3.5" />} label="Points" value={`${stats.count}`} />
+            <Metric icon={<Gauge className="w-3.5 h-3.5" />} label="Avg speed" value={`${stats.avgKmh.toFixed(1)} km/h`} />
+            <Metric icon={<Gauge className="w-3.5 h-3.5" />} label="Max speed" value={`${stats.maxKmh.toFixed(1)} km/h`} />
+
+            <div className="hidden lg:block h-8 w-px bg-slate-800" />
+
+            <div className="flex items-start gap-2 min-w-[180px] flex-1">
+              <Flag className="w-4 h-4 text-emerald-400 mt-0.5 shrink-0" />
+              <div className="min-w-0">
+                <p className="text-xs text-slate-500">Start</p>
+                <p className="text-slate-300 text-sm truncate" title={startPlace}>{startPlace || "Resolving…"}</p>
+              </div>
+            </div>
+            <div className="flex items-start gap-2 min-w-[180px] flex-1">
+              <Flag className="w-4 h-4 text-rose-400 mt-0.5 shrink-0" />
+              <div className="min-w-0">
+                <p className="text-xs text-slate-500">End</p>
+                <p className="text-slate-300 text-sm truncate" title={endPlace}>{endPlace || "Resolving…"}</p>
+              </div>
+            </div>
+
+            <div className="flex gap-2 ml-auto">
+              <Button variant="outline" size="sm" className="border-slate-700 text-slate-300 bg-transparent hover:bg-slate-800" onClick={exportCsv}>
+                <Download className="w-4 h-4 mr-1.5" /> CSV
+              </Button>
+              <Button variant="outline" size="sm" className="border-slate-700 text-slate-300 bg-transparent hover:bg-slate-800" onClick={() => window.print()}>
+                <Printer className="w-4 h-4 mr-1.5" /> PDF
+              </Button>
+            </div>
           </div>
+        </Card>
+      )}
 
-          {isLoading ? (
-            <div className="flex justify-center py-12">
-              <Loader2 className="h-6 w-6 animate-spin text-indigo-500" />
-            </div>
-          ) : !hasQueried ? (
-            <div className="text-center py-12 bg-slate-900 rounded-xl border border-slate-800 border-dashed">
-              <Route className="w-8 h-8 text-slate-600 mx-auto mb-2" />
-              <p className="text-slate-500">Choose an employee and interval, then View route.</p>
-            </div>
-          ) : sessions.length === 0 ? (
-            <div className="text-center py-12 bg-slate-900 rounded-xl border border-slate-800 border-dashed">
-              <Route className="w-8 h-8 text-slate-600 mx-auto mb-2" />
-              <p className="text-slate-500">No trips found in this interval.</p>
-            </div>
-          ) : (
-            sessions.map((s) => {
-              const sPts = points.filter((p) => p.sessionId === s.sessionId);
-              return (
-                <button
-                  key={s._id}
-                  onClick={() => setSelectedSubTrip(s.sessionId)}
-                  className={`w-full text-left p-4 rounded-xl border transition-all ${
-                    selectedSubTrip === s.sessionId
-                      ? "bg-indigo-600/20 border-indigo-500/50"
-                      : "bg-slate-900 border-slate-800 hover:bg-slate-800/70"
-                  }`}
-                >
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0">
-                      <p className="font-semibold text-white text-sm truncate">{selectedLabel}</p>
-                      <p className="text-xs text-slate-400 mt-1">
-                        {format(new Date(s.startedAt), "MMM dd, HH:mm")}
-                        {s.stoppedAt && ` – ${format(new Date(s.stoppedAt), "HH:mm")}`}
-                      </p>
-                    </div>
-                    <Badge variant="outline" className={STATUS_COLORS[s.status] || ""}>
-                      {s.status}
-                    </Badge>
-                  </div>
-                  <div className="flex items-center gap-4 mt-2 text-xs text-slate-400">
-                    <span>
-                      {durationStr(
-                        new Date(s.startedAt).getTime(),
-                        s.stoppedAt ? new Date(s.stoppedAt).getTime() : Date.now()
-                      )}
-                    </span>
-                    <span className="flex items-center gap-1">
-                      <MapPin className="w-3 h-3" />
-                      {sPts.length || s.totalPoints} pts
-                    </span>
-                  </div>
-                </button>
-              );
-            })
-          )}
-        </div>
+      {/* Full-width map region */}
+      <div className="relative h-[68vh] min-h-[460px] w-full rounded-xl overflow-hidden border border-slate-800 bg-slate-900">
+        {isLoading ? (
+          <div className="absolute inset-0 flex items-center justify-center">
+            <Loader2 className="h-6 w-6 animate-spin text-indigo-500" />
+          </div>
+        ) : hasRoute ? (
+          <>
+            <RouteHistoryMap points={displayedPoints} playbackIndex={playbackIndex} />
 
-        {/* Right: metadata + map */}
-        <div className="lg:col-span-3">
-          {isLoading ? (
-            <div className="h-[560px] flex items-center justify-center bg-slate-900 rounded-xl border border-slate-800">
-              <Loader2 className="h-6 w-6 animate-spin text-indigo-500" />
+            {/* Hint */}
+            <div className="pointer-events-none absolute top-3 left-1/2 -translate-x-1/2 z-[1000]">
+              <div className="flex items-center gap-1.5 rounded-full bg-slate-900/85 backdrop-blur px-3 py-1 text-xs text-slate-300 border border-slate-700 shadow-lg">
+                <MousePointerClick className="w-3.5 h-3.5 text-indigo-400" />
+                Click the route to inspect a point
+              </div>
             </div>
-          ) : displayedPoints.length > 0 && stats ? (
-            <Card className="bg-slate-900 border-slate-800 overflow-hidden">
-              {/* Metadata */}
-              <div className="p-4 border-b border-slate-800 space-y-4">
-                <div className="grid grid-cols-2 sm:grid-cols-5 gap-4">
-                  <Metric icon={<Ruler className="w-3.5 h-3.5" />} label="Distance" value={`${stats.distance.toFixed(2)} km`} />
-                  <Metric icon={<Clock className="w-3.5 h-3.5" />} label="Duration" value={stats.duration} />
-                  <Metric icon={<MapPin className="w-3.5 h-3.5" />} label="Points" value={`${stats.count}`} />
-                  <Metric icon={<Gauge className="w-3.5 h-3.5" />} label="Avg speed" value={`${stats.avgKmh.toFixed(1)} km/h`} />
-                  <Metric icon={<Gauge className="w-3.5 h-3.5" />} label="Max speed" value={`${stats.maxKmh.toFixed(1)} km/h`} />
-                </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
-                  <div className="flex items-start gap-2">
-                    <Flag className="w-4 h-4 text-emerald-400 mt-0.5 shrink-0" />
-                    <div className="min-w-0">
-                      <p className="text-xs text-slate-500">Start</p>
-                      <p className="text-slate-300 truncate" title={startPlace}>
-                        {startPlace || "Resolving…"}
-                      </p>
-                    </div>
-                  </div>
-                  <div className="flex items-start gap-2">
-                    <Flag className="w-4 h-4 text-rose-400 mt-0.5 shrink-0" />
-                    <div className="min-w-0">
-                      <p className="text-xs text-slate-500">End</p>
-                      <p className="text-slate-300 truncate" title={endPlace}>
-                        {endPlace || "Resolving…"}
-                      </p>
-                    </div>
-                  </div>
-                </div>
 
-                {/* Playback + export toolbar */}
-                <div className="flex flex-wrap items-center gap-3 pt-1">
-                  <Button
-                    size="sm"
-                    className="bg-indigo-600 hover:bg-indigo-500 text-white"
-                    onClick={togglePlay}
-                    disabled={displayedPoints.length < 2}
+            {/* Trips overlay */}
+            {sessions.length > 0 && (
+              <div className="absolute top-3 right-3 z-[1000] w-64 max-w-[80%]">
+                <div className="rounded-xl bg-slate-900/90 backdrop-blur border border-slate-700 shadow-2xl overflow-hidden">
+                  <button
+                    onClick={() => setTripsOpen((v) => !v)}
+                    className="flex w-full items-center justify-between px-3 py-2 text-sm font-semibold text-slate-200 hover:bg-slate-800/60"
                   >
-                    {isPlaying ? <Pause className="w-4 h-4 mr-1.5" /> : <Play className="w-4 h-4 mr-1.5" />}
-                    {isPlaying ? "Pause" : "Play"}
+                    <span>Trips in interval ({sessions.length})</span>
+                    {tripsOpen ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                  </button>
+                  {tripsOpen && (
+                    <div className="max-h-[46vh] overflow-y-auto p-2 space-y-2 border-t border-slate-800">
+                      <button
+                        onClick={() => setSelectedSubTrip(null)}
+                        className={`w-full text-left px-3 py-2 rounded-lg text-xs border transition-colors ${
+                          selectedSubTrip === null
+                            ? "border-indigo-500/50 text-indigo-200 bg-indigo-600/20"
+                            : "border-slate-700 text-slate-400 hover:bg-slate-800"
+                        }`}
+                      >
+                        All trips ({points.length} pts)
+                      </button>
+                      {sessions.map((s) => {
+                        const sPts = points.filter((p) => p.sessionId === s.sessionId).length;
+                        return (
+                          <button
+                            key={s._id}
+                            onClick={() => setSelectedSubTrip(s.sessionId)}
+                            className={`w-full text-left px-3 py-2 rounded-lg border transition-all ${
+                              selectedSubTrip === s.sessionId
+                                ? "bg-indigo-600/20 border-indigo-500/50"
+                                : "bg-slate-900 border-slate-800 hover:bg-slate-800/70"
+                            }`}
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <p className="text-xs font-medium text-white truncate">{selectedLabel}</p>
+                              <Badge variant="outline" className={`${STATUS_COLORS[s.status] || ""} text-[10px]`}>
+                                {s.status}
+                              </Badge>
+                            </div>
+                            <p className="text-[11px] text-slate-400 mt-1">
+                              {format(new Date(s.startedAt), "MMM dd, HH:mm")}
+                              {s.stoppedAt && ` – ${format(new Date(s.stoppedAt), "HH:mm")}`}
+                            </p>
+                            <p className="text-[11px] text-slate-500 mt-0.5 flex items-center gap-1">
+                              <MapPin className="w-3 h-3" />
+                              {sPts || s.totalPoints} pts
+                            </p>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Playback overlay */}
+            {displayedPoints.length > 1 && (
+              <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-[1000] w-[min(680px,92%)]">
+                <div className="flex items-center gap-3 rounded-xl bg-slate-900/90 backdrop-blur border border-slate-700 shadow-2xl px-3 py-2">
+                  <Button size="sm" className="bg-indigo-600 hover:bg-indigo-500 text-white shrink-0" onClick={togglePlay}>
+                    {isPlaying ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4" />}
                   </Button>
+                  <span className="text-xs font-mono text-slate-300 shrink-0 tabular-nums w-16">{playbackTime}</span>
                   <input
                     type="range"
                     min={0}
@@ -497,9 +508,9 @@ export default function RouteHistoryPage() {
                       setIsPlaying(false);
                       setPlaybackIndex(Number(e.target.value));
                     }}
-                    className="flex-1 min-w-[120px] accent-indigo-500"
+                    className="flex-1 accent-indigo-500"
                   />
-                  <div className="flex gap-1">
+                  <div className="flex gap-1 shrink-0">
                     {[1, 2, 4].map((sp) => (
                       <button
                         key={sp}
@@ -514,40 +525,22 @@ export default function RouteHistoryPage() {
                       </button>
                     ))}
                   </div>
-                  <div className="flex gap-2">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="border-slate-700 text-slate-300 bg-transparent hover:bg-slate-800"
-                      onClick={exportCsv}
-                    >
-                      <Download className="w-4 h-4 mr-1.5" /> CSV
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="border-slate-700 text-slate-300 bg-transparent hover:bg-slate-800"
-                      onClick={() => window.print()}
-                    >
-                      <Printer className="w-4 h-4 mr-1.5" /> PDF
-                    </Button>
-                  </div>
                 </div>
               </div>
-
-              <RouteHistoryMap points={displayedPoints} playbackIndex={playbackIndex} />
-            </Card>
-          ) : (
-            <div className="h-[560px] flex items-center justify-center bg-slate-900 rounded-xl border border-slate-800 border-dashed">
-              <div className="text-center">
-                <Route className="w-10 h-10 text-slate-700 mx-auto mb-3" />
-                <p className="text-slate-500">
-                  {hasQueried ? "No GPS points in this interval." : "Select a route to view it on the map."}
-                </p>
-              </div>
+            )}
+          </>
+        ) : (
+          <div className="absolute inset-0 flex items-center justify-center">
+            <div className="text-center">
+              <Route className="w-10 h-10 text-slate-700 mx-auto mb-3" />
+              <p className="text-slate-500">
+                {hasQueried
+                  ? "No GPS points in this interval."
+                  : "Choose an employee and interval, then View route."}
+              </p>
             </div>
-          )}
-        </div>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -560,7 +553,7 @@ function Metric({ icon, label, value }: { icon: React.ReactNode; label: string; 
         {icon}
         {label}
       </p>
-      <p className="font-bold text-white mt-0.5">{value}</p>
+      <p className="font-bold text-white mt-0.5 whitespace-nowrap">{value}</p>
     </div>
   );
 }
