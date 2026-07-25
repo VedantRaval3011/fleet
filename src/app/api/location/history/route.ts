@@ -17,6 +17,8 @@ export async function GET(req: Request) {
     const { searchParams } = new URL(req.url);
     const sessionId = searchParams.get("sessionId");
     const deviceId = searchParams.get("deviceId");
+    const from = searchParams.get("from");
+    const to = searchParams.get("to");
 
     if (!sessionId && !deviceId) {
       return NextResponse.json({ error: "sessionId or deviceId required" }, { status: 400 });
@@ -31,8 +33,19 @@ export async function GET(req: Request) {
     if (sessionId) query.sessionId = sessionId;
     if (deviceId) query.deviceId = deviceId;
 
+    // Time-window mode: when from/to are supplied (typically with a deviceId),
+    // return every point in the interval in true chronological order — this can
+    // span multiple sessions. Falls back to sequence order for a single session.
+    const windowMode = Boolean(from || to);
+    if (windowMode) {
+      const range: Record<string, Date> = {};
+      if (from) range.$gte = new Date(from);
+      if (to) range.$lte = new Date(to);
+      query.recordedAt = range;
+    }
+
     const points = await LocationPoint.find(query)
-      .sort({ sequenceNumber: 1 })
+      .sort(windowMode ? { recordedAt: 1 } : { sequenceNumber: 1 })
       .limit(5000)
       .lean();
 
