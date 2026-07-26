@@ -3,7 +3,7 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import connectToDatabase from "@/lib/db";
 import LocationPoint from "@/models/LocationPoint";
-import mongoose from "mongoose";
+import { companyIdIn } from "@/lib/companyIdQuery";
 
 export const dynamic = "force-dynamic";
 
@@ -26,16 +26,13 @@ export async function GET(req: Request) {
 
     await connectToDatabase();
 
-    const query: any = {};
+    const query: Record<string, unknown> = {};
     if (session.user.role !== "super_admin") {
-      query.companyId = new mongoose.Types.ObjectId(session.user.companyId!);
+      query.companyId = companyIdIn(session.user.companyId!);
     }
     if (sessionId) query.sessionId = sessionId;
     if (deviceId) query.deviceId = deviceId;
 
-    // Time-window mode: when from/to are supplied (typically with a deviceId),
-    // return every point in the interval in true chronological order — this can
-    // span multiple sessions. Falls back to sequence order for a single session.
     const windowMode = Boolean(from || to);
     if (windowMode) {
       const range: Record<string, Date> = {};

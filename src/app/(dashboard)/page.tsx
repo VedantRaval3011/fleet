@@ -6,7 +6,8 @@ import LocationSession from "@/models/LocationSession";
 import Expense from "@/models/Expense";
 import CallLog from "@/models/CallLog";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Users, Navigation, CreditCard, Banknote, PhoneCall } from "lucide-react";
+import { Users, Navigation, CreditCard, Banknote, PhoneCall, Database } from "lucide-react";
+import Link from "next/link";
 import mongoose from "mongoose";
 
 async function getDashboardStats(companyId: string) {
@@ -115,6 +116,25 @@ export default async function DashboardPage() {
         </Card>
       </div>
       
+      <div className="mt-2">
+        <Link href="/caller-lookup" className="block group">
+          <Card className="bg-slate-900 border-slate-800 text-slate-100 shadow-sm transition-colors group-hover:border-cyan-500/40">
+            <CardHeader className="flex flex-row items-center justify-between pb-2">
+              <CardTitle className="text-sm font-medium text-slate-400">
+                Caller ID Database Builder
+              </CardTitle>
+              <Database className="h-4 w-4 text-cyan-400" />
+            </CardHeader>
+            <CardContent>
+              <div className="text-lg font-semibold text-white">Caller Lookup Job</div>
+              <p className="text-xs text-slate-500 mt-1">
+                Configure number series batches, run pluggable lookups, and build a caller database
+              </p>
+            </CardContent>
+          </Card>
+        </Link>
+      </div>
+
       {/* Additional dashboard sections like charts would go here */}
       <div className="mt-8 grid gap-6 md:grid-cols-2">
         <Card className="bg-slate-900 border-slate-800 h-96 flex items-center justify-center text-slate-500">

@@ -3,10 +3,10 @@ import mongoose, { Schema, Document } from 'mongoose';
 export interface IDeviceLocationState extends Document {
   deviceId: string;
   driverId?: mongoose.Types.ObjectId;
-  companyId?: mongoose.Types.ObjectId;
+  companyId?: mongoose.Types.ObjectId | string;
   employeeId?: string;
   employeeName?: string;
-  vehicle?: string;
+  vehicle?: string | { id?: string; registration?: string };
   latestCoordinates: { lat: number; lng: number };
   latestAccuracy?: number;
   latestSpeed?: number;
@@ -25,10 +25,10 @@ const DeviceLocationStateSchema = new Schema(
   {
     deviceId: { type: String, required: true, unique: true },
     driverId: { type: Schema.Types.ObjectId, ref: 'Driver' },
-    companyId: { type: Schema.Types.ObjectId, ref: 'Company' },
+    companyId: { type: Schema.Types.Mixed },
     employeeId: { type: String },
     employeeName: { type: String },
-    vehicle: { type: String },
+    vehicle: { type: Schema.Types.Mixed },
     latestCoordinates: {
       lat: { type: Number },
       lng: { type: Number },

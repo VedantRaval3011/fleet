@@ -3,7 +3,7 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import connectToDatabase from "@/lib/db";
 import LocationSession from "@/models/LocationSession";
-import mongoose from "mongoose";
+import { companyIdIn } from "@/lib/companyIdQuery";
 
 export const dynamic = "force-dynamic";
 
@@ -20,16 +20,24 @@ export async function GET(req: Request) {
     const deviceId = searchParams.get("deviceId");
     const driverId = searchParams.get("driverId");
     const status = searchParams.get("status");
+    const from = searchParams.get("from");
+    const to = searchParams.get("to");
     const limitParam = parseInt(searchParams.get("limit") ?? "50", 10);
 
-    const query: any = {};
+    const query: Record<string, unknown> = {};
 
     if (session.user.role !== "super_admin") {
-      query.companyId = new mongoose.Types.ObjectId(session.user.companyId!);
+      query.companyId = companyIdIn(session.user.companyId!);
     }
     if (deviceId) query.deviceId = deviceId;
-    if (driverId) query.driverId = new mongoose.Types.ObjectId(driverId);
+    if (driverId) query.driverId = driverId;
     if (status) query.status = status;
+    if (from || to) {
+      const range: Record<string, Date> = {};
+      if (from) range.$gte = new Date(from);
+      if (to) range.$lte = new Date(to);
+      query.startedAt = range;
+    }
 
     const sessions = await LocationSession.find(query)
       .sort({ startedAt: -1 })

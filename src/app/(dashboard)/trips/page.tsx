@@ -1,11 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useMemo } from "react";
-import { Card } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Badge } from "@/components/ui/badge";
-import { Combobox, type ComboboxOption } from "@/components/ui/combobox";
+import { useState, useEffect, useCallback, useMemo, useRef, type ReactNode } from "react";
 import {
   Loader2,
   Route,
@@ -18,12 +13,33 @@ import {
   Clock,
   Ruler,
   Flag,
+  Menu,
+  Search,
+  X,
+  List,
   ChevronDown,
   ChevronUp,
-  MousePointerClick,
+  Minus,
+  AlertTriangle,
+  Zap,
+  PauseCircle,
+  Filter,
 } from "lucide-react";
 import { format } from "date-fns";
 import dynamic from "next/dynamic";
+import { useSidebar } from "@/components/layout/SidebarContext";
+import {
+  SPEED_BANDS,
+  detectIdleEvents,
+  detectViolations,
+  maxSpeedPoint,
+  tripStats,
+  formatDuration,
+  deviceColor,
+  type MaxSpeed,
+  type TripStats,
+} from "@/lib/routeAnalytics";
+import type { FocusTarget } from "./RouteHistoryMap";
 
 const RouteHistoryMap = dynamic(() => import("./RouteHistoryMap"), { ssr: false });
 
@@ -58,36 +74,29 @@ interface LocationPoint {
 interface FleetDevice {
   deviceId: string;
   employeeName?: string;
-  vehicle?: string;
+  vehicle?: string | { id?: string; registration?: string };
 }
 
-const STATUS_COLORS: Record<string, string> = {
-  ACTIVE: "border-emerald-500/50 text-emerald-400 bg-emerald-500/10",
-  COMPLETED: "border-indigo-500/50 text-indigo-400 bg-indigo-500/10",
-  INTERRUPTED: "border-amber-500/50 text-amber-400 bg-amber-500/10",
+type EventFilter = "all" | "idle" | "violations" | "stops" | "trips" | "max";
+
+const STATUS_CHIP: Record<string, string> = {
+  ACTIVE: "bg-emerald-500 text-white",
+  COMPLETED: "bg-indigo-500 text-white",
+  INTERRUPTED: "bg-amber-500 text-white",
 };
 
-function durationStr(startMs: number, endMs: number): string {
-  const mins = Math.max(0, Math.floor((endMs - startMs) / 60000));
-  if (mins < 60) return `${mins}m`;
-  return `${Math.floor(mins / 60)}h ${mins % 60}m`;
+const SPEED_LIMIT_KEY = "fleet.route.speedLimit.";
+
+function vehicleLabel(vehicle: FleetDevice["vehicle"]): string | undefined {
+  if (!vehicle) return undefined;
+  if (typeof vehicle === "string") return vehicle;
+  return vehicle.registration || vehicle.id;
 }
 
-function distanceKm(points: LocationPoint[]): number {
-  let dist = 0;
-  for (let i = 1; i < points.length; i++) {
-    const lat1 = (points[i - 1].latitude * Math.PI) / 180;
-    const lat2 = (points[i].latitude * Math.PI) / 180;
-    const dLat = lat2 - lat1;
-    const dLng = ((points[i].longitude - points[i - 1].longitude) * Math.PI) / 180;
-    const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
-    dist += 6371 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  }
-  return dist;
+function deviceDisplayName(d: FleetDevice): string {
+  return d.employeeName?.trim() || vehicleLabel(d.vehicle) || d.deviceId;
 }
 
-// Reverse-geocode a single coordinate via OpenStreetMap Nominatim (no API key).
-// Falls back to "lat, lng" on any failure or rate-limit.
 async function reverseGeocode(lat: number, lng: number): Promise<string> {
   const fallback = `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
   try {
@@ -103,76 +112,222 @@ async function reverseGeocode(lat: number, lng: number): Promise<string> {
   }
 }
 
+function loadSpeedLimit(deviceId: string | null): number {
+  if (!deviceId || typeof window === "undefined") return 60;
+  const raw = localStorage.getItem(SPEED_LIMIT_KEY + deviceId);
+  const n = raw != null ? Number(raw) : 60;
+  return Number.isFinite(n) && n > 0 ? n : 60;
+}
+
 export default function RouteHistoryPage() {
+  const { open } = useSidebar();
   const [devices, setDevices] = useState<FleetDevice[]>([]);
   const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
+  const [deviceQuery, setDeviceQuery] = useState("");
+  const [pickerOpen, setPickerOpen] = useState(false);
 
   const today = new Date().toISOString().slice(0, 10);
   const [date, setDate] = useState(today);
   const [startTime, setStartTime] = useState("00:00");
   const [endTime, setEndTime] = useState("23:59");
   const [formError, setFormError] = useState("");
+  const [speedLimitKmh, setSpeedLimitKmh] = useState(60);
 
   const [isLoading, setIsLoading] = useState(false);
   const [hasQueried, setHasQueried] = useState(false);
   const [points, setPoints] = useState<LocationPoint[]>([]);
   const [sessions, setSessions] = useState<LocationSession[]>([]);
-  const [selectedSubTrip, setSelectedSubTrip] = useState<string | null>(null); // sessionId or null = all
-  const [tripsOpen, setTripsOpen] = useState(true);
+  const [selectedSubTrip, setSelectedSubTrip] = useState<string | null>(null);
 
-  const [startPlace, setStartPlace] = useState<string>("");
-  const [endPlace, setEndPlace] = useState<string>("");
+  const [startPlace, setStartPlace] = useState("");
+  const [endPlace, setEndPlace] = useState("");
 
-  // Playback
   const [playbackIndex, setPlaybackIndex] = useState<number | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [speed, setSpeed] = useState(1);
 
-  // Load devices to power the employee/device picker.
+  // Collapsible panels
+  const [filtersMinimized, setFiltersMinimized] = useState(false);
+  const [statsMinimized, setStatsMinimized] = useState(false);
+  const [timelineMinimized, setTimelineMinimized] = useState(false);
+  const [tripsMinimized, setTripsMinimized] = useState(false);
+  const [legendOpen, setLegendOpen] = useState(true);
+
+  const [eventFilter, setEventFilter] = useState<EventFilter>("all");
+  const [focus, setFocus] = useState<FocusTarget>(null);
+
+  const searchWrapRef = useRef<HTMLDivElement | null>(null);
+
   useEffect(() => {
-    (async () => {
+    let cancelled = false;
+    const load = async () => {
       try {
         const res = await fetch("/api/fleet-map");
-        if (res.ok) setDevices(await res.json());
-      } catch {}
-    })();
+        if (res.ok && !cancelled) setDevices(await res.json());
+      } catch {
+        /* ignore */
+      }
+    };
+    load();
+    const id = setInterval(load, 8000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
   }, []);
 
-  const deviceOptions: ComboboxOption[] = useMemo(
-    () =>
-      devices
-        .map((d) => ({
-          value: d.deviceId,
-          label: d.employeeName?.trim() || `Device ${d.deviceId.slice(0, 8)}…`,
-          sublabel: d.vehicle?.trim() || d.deviceId,
-        }))
-        .sort((a, b) => a.label.localeCompare(b.label)),
-    [devices]
-  );
+  useEffect(() => {
+    const onDoc = (e: MouseEvent) => {
+      if (!searchWrapRef.current?.contains(e.target as Node)) setPickerOpen(false);
+    };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, []);
 
-  // Points shown for the currently selected sub-trip (or the whole window).
+  useEffect(() => {
+    setSpeedLimitKmh(loadSpeedLimit(selectedDeviceId));
+  }, [selectedDeviceId]);
+
+  const persistSpeedLimit = (v: number) => {
+    setSpeedLimitKmh(v);
+    if (selectedDeviceId && typeof window !== "undefined") {
+      localStorage.setItem(SPEED_LIMIT_KEY + selectedDeviceId, String(v));
+    }
+  };
+
+  const filteredDevices = useMemo(() => {
+    const q = deviceQuery.trim().toLowerCase();
+    const list = [...devices].sort((a, b) =>
+      deviceDisplayName(a).localeCompare(deviceDisplayName(b))
+    );
+    if (!q) return list;
+    return list.filter((d) => {
+      const vehicle = vehicleLabel(d.vehicle) || "";
+      const hay = `${d.employeeName || ""} ${vehicle} ${d.deviceId}`.toLowerCase();
+      return hay.includes(q);
+    });
+  }, [devices, deviceQuery]);
+
+  const selectedDevice = devices.find((d) => d.deviceId === selectedDeviceId) || null;
+  const selectedLabel = selectedDevice ? deviceDisplayName(selectedDevice) : "";
+  const accent = selectedDeviceId ? deviceColor(selectedDeviceId) : "#6366f1";
+
   const displayedPoints = useMemo(
     () => (selectedSubTrip ? points.filter((p) => p.sessionId === selectedSubTrip) : points),
     [points, selectedSubTrip]
   );
 
-  const stats = useMemo(() => {
-    if (displayedPoints.length === 0) return null;
+  const idleEvents = useMemo(
+    () => detectIdleEvents(displayedPoints),
+    [displayedPoints]
+  );
+  const violations = useMemo(
+    () => detectViolations(displayedPoints, speedLimitKmh),
+    [displayedPoints, speedLimitKmh]
+  );
+  const maxSpd: MaxSpeed | null = useMemo(
+    () => maxSpeedPoint(displayedPoints),
+    [displayedPoints]
+  );
+  const stats: TripStats | null = useMemo(
+    () => tripStats(displayedPoints, idleEvents),
+    [displayedPoints, idleEvents]
+  );
+
+  const showIdle = eventFilter === "all" || eventFilter === "idle" || eventFilter === "stops";
+  const showViolations = eventFilter === "all" || eventFilter === "violations";
+  const showMaxSpeed = eventFilter === "all" || eventFilter === "max";
+
+  type TimelineItem = {
+    id: string;
+    kind: "start" | "end" | "idle" | "violation" | "max" | "trip";
+    time: string;
+    title: string;
+    subtitle: string;
+    focus: FocusTarget;
+  };
+
+  const timeline: TimelineItem[] = useMemo(() => {
+    if (displayedPoints.length === 0) return [];
+    const items: TimelineItem[] = [];
     const first = displayedPoints[0];
     const last = displayedPoints[displayedPoints.length - 1];
-    const speeds = displayedPoints
-      .map((p) => p.speedMetersPerSecond)
-      .filter((s): s is number => s != null && s >= 0);
-    const avg = speeds.length ? speeds.reduce((a, b) => a + b, 0) / speeds.length : 0;
-    const max = speeds.length ? Math.max(...speeds) : 0;
-    return {
-      distance: distanceKm(displayedPoints),
-      duration: durationStr(new Date(first.recordedAt).getTime(), new Date(last.recordedAt).getTime()),
-      count: displayedPoints.length,
-      avgKmh: avg * 3.6,
-      maxKmh: max * 3.6,
-    };
-  }, [displayedPoints]);
+
+    items.push({
+      id: "start",
+      kind: "start",
+      time: first.recordedAt,
+      title: "Trip start",
+      subtitle: format(new Date(first.recordedAt), "HH:mm:ss"),
+      focus: { type: "point", idx: 0 },
+    });
+
+    for (const e of idleEvents) {
+      items.push({
+        id: e.id,
+        kind: "idle",
+        time: e.startTime,
+        title: `Idle · ${formatDuration(e.durationMs)}`,
+        subtitle: `${format(new Date(e.startTime), "HH:mm")} – ${format(new Date(e.endTime), "HH:mm")}`,
+        focus: { type: "idle", id: e.id },
+      });
+    }
+
+    for (const v of violations) {
+      items.push({
+        id: v.id,
+        kind: "violation",
+        time: v.startTime,
+        title: `Speeding · ${v.peakKmh.toFixed(0)} km/h`,
+        subtitle: `Limit ${speedLimitKmh} · ${formatDuration(v.durationMs)}`,
+        focus: { type: "violation", id: v.id },
+      });
+    }
+
+    if (maxSpd && maxSpd.kmh > 0) {
+      items.push({
+        id: "max",
+        kind: "max",
+        time: maxSpd.time,
+        title: `Max speed · ${maxSpd.kmh.toFixed(0)} km/h`,
+        subtitle: format(new Date(maxSpd.time), "HH:mm:ss"),
+        focus: { type: "max", idx: maxSpd.idx },
+      });
+    }
+
+    if (displayedPoints.length > 1) {
+      items.push({
+        id: "end",
+        kind: "end",
+        time: last.recordedAt,
+        title: "Trip end",
+        subtitle: format(new Date(last.recordedAt), "HH:mm:ss"),
+        focus: { type: "point", idx: displayedPoints.length - 1 },
+      });
+    }
+
+    for (const s of sessions) {
+      items.push({
+        id: `trip-${s.sessionId}`,
+        kind: "trip",
+        time: s.startedAt,
+        title: `Trip · ${s.status}`,
+        subtitle: format(new Date(s.startedAt), "MMM dd, HH:mm"),
+        focus: { type: "bounds" },
+      });
+    }
+
+    items.sort((a, b) => new Date(a.time).getTime() - new Date(b.time).getTime());
+
+    return items.filter((it) => {
+      if (eventFilter === "all") return true;
+      if (eventFilter === "idle" || eventFilter === "stops") return it.kind === "idle";
+      if (eventFilter === "violations") return it.kind === "violation";
+      if (eventFilter === "max") return it.kind === "max";
+      if (eventFilter === "trips") return it.kind === "trip" || it.kind === "start" || it.kind === "end";
+      return true;
+    });
+  }, [displayedPoints, idleEvents, violations, maxSpd, sessions, speedLimitKmh, eventFilter]);
 
   const resetPlayback = () => {
     setIsPlaying(false);
@@ -180,7 +335,11 @@ export default function RouteHistoryPage() {
   };
 
   const viewRoute = useCallback(async () => {
-    if (!selectedDeviceId) return;
+    if (!selectedDeviceId) {
+      setFormError("Select a device first.");
+      setPickerOpen(true);
+      return;
+    }
     const from = new Date(`${date}T${startTime}:00`);
     const to = new Date(`${date}T${endTime}:59`);
     if (from.getTime() >= to.getTime()) {
@@ -196,6 +355,8 @@ export default function RouteHistoryPage() {
     setEndPlace("");
     setPoints([]);
     setSessions([]);
+    setStatsMinimized(false);
+    setTimelineMinimized(false);
 
     try {
       const params = new URLSearchParams({
@@ -205,7 +366,9 @@ export default function RouteHistoryPage() {
       });
       const [ptsRes, sesRes] = await Promise.all([
         fetch(`/api/location/history?${params}`),
-        fetch(`/api/location/sessions?deviceId=${selectedDeviceId}&limit=200`),
+        fetch(
+          `/api/location/sessions?deviceId=${encodeURIComponent(selectedDeviceId)}&from=${encodeURIComponent(from.toISOString())}&to=${encodeURIComponent(to.toISOString())}&limit=200`
+        ),
       ]);
 
       const pts: LocationPoint[] = ptsRes.ok ? await ptsRes.json() : [];
@@ -234,12 +397,10 @@ export default function RouteHistoryPage() {
     }
   }, [selectedDeviceId, date, startTime, endTime]);
 
-  // Reset playback whenever the displayed route changes.
   useEffect(() => {
     resetPlayback();
   }, [selectedSubTrip]);
 
-  // Playback engine.
   useEffect(() => {
     if (!isPlaying || displayedPoints.length < 2) return;
     const step = Math.max(1, Math.ceil(displayedPoints.length / 300)) * speed;
@@ -253,7 +414,6 @@ export default function RouteHistoryPage() {
     return () => clearInterval(id);
   }, [isPlaying, speed, displayedPoints.length]);
 
-  // Stop when playback reaches the end.
   useEffect(() => {
     if (playbackIndex != null && playbackIndex >= displayedPoints.length - 1) {
       setIsPlaying(false);
@@ -295,265 +455,601 @@ export default function RouteHistoryPage() {
     URL.revokeObjectURL(url);
   };
 
-  const selectedLabel = deviceOptions.find((o) => o.value === selectedDeviceId)?.label ?? "";
   const playbackTime =
     playbackIndex != null && displayedPoints[playbackIndex]
       ? format(new Date(displayedPoints[playbackIndex].recordedAt), "HH:mm:ss")
       : displayedPoints[0]
-      ? format(new Date(displayedPoints[0].recordedAt), "HH:mm:ss")
-      : "--:--:--";
+        ? format(new Date(displayedPoints[0].recordedAt), "HH:mm:ss")
+        : "--:--:--";
 
   const hasRoute = displayedPoints.length > 0 && !!stats;
 
-  return (
-    <div className="space-y-4">
-      <div>
-        <h1 className="text-3xl font-bold tracking-tight text-white">Route History</h1>
-        <p className="text-slate-400 mt-1">
-          Pick an employee, a day and a time interval to replay their driven route.
-        </p>
-      </div>
+  const pickDevice = (d: FleetDevice) => {
+    setSelectedDeviceId(d.deviceId);
+    setDeviceQuery(deviceDisplayName(d));
+    setPickerOpen(false);
+    setFormError("");
+  };
 
-      {/* Control bar */}
-      <Card className="bg-slate-900 border-slate-800 p-4">
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-3 items-end">
-          <div className="lg:col-span-2">
-            <label className="text-xs text-slate-500 mb-1.5 block">Employee / Device</label>
-            <Combobox
-              options={deviceOptions}
-              value={selectedDeviceId}
-              onChange={setSelectedDeviceId}
-              placeholder="Select an employee…"
-              searchPlaceholder="Search name or device…"
-              emptyText="No devices found."
-            />
+  const kindIcon = (kind: TimelineItem["kind"]) => {
+    switch (kind) {
+      case "start":
+        return <Flag className="h-3.5 w-3.5 text-emerald-500" />;
+      case "end":
+        return <Flag className="h-3.5 w-3.5 text-rose-500" />;
+      case "idle":
+        return <PauseCircle className="h-3.5 w-3.5 text-blue-500" />;
+      case "violation":
+        return <AlertTriangle className="h-3.5 w-3.5 text-rose-600" />;
+      case "max":
+        return <Zap className="h-3.5 w-3.5 text-amber-500" />;
+      case "trip":
+        return <Route className="h-3.5 w-3.5 text-indigo-500" />;
+    }
+  };
+
+  return (
+    <div className="relative h-full w-full overflow-hidden bg-slate-200">
+      <RouteHistoryMap
+        points={displayedPoints}
+        playbackIndex={playbackIndex}
+        deviceColor={accent}
+        idleEvents={idleEvents}
+        violations={violations}
+        maxSpeed={maxSpd}
+        speedLimitKmh={speedLimitKmh}
+        showIdle={showIdle}
+        showViolations={showViolations}
+        showMaxSpeed={showMaxSpeed}
+        focus={focus}
+        onFocusConsumed={() => setFocus(null)}
+      />
+
+      {isLoading && (
+        <div className="absolute inset-0 z-[500] flex items-center justify-center bg-black/10">
+          <div className="flex items-center gap-2 rounded-full bg-white px-4 py-2 text-sm font-medium text-slate-700 shadow-lg">
+            <Loader2 className="h-4 w-4 animate-spin text-indigo-600" />
+            Loading route…
           </div>
-          <div>
-            <label className="text-xs text-slate-500 mb-1.5 block">Date</label>
-            <Input
-              type="date"
-              value={date}
-              max={today}
-              onChange={(e) => setDate(e.target.value)}
-              className="bg-slate-900 border-slate-700 text-slate-200"
+        </div>
+      )}
+
+      {/* ─── Left column ─── */}
+      <div className="absolute left-3 top-3 z-[1100] flex w-[min(calc(100%-1.5rem),24rem)] flex-col gap-2 sm:left-4 sm:top-4">
+        {/* Search */}
+        <div ref={searchWrapRef} className="relative">
+          <div className="flex items-center gap-1 rounded-full bg-white pl-2 pr-2 shadow-[0_2px_8px_rgba(0,0,0,0.18)]">
+            <button
+              type="button"
+              onClick={() => open()}
+              className="rounded-full p-2.5 text-slate-600 hover:bg-slate-100 sm:hidden"
+              aria-label="Open menu"
+            >
+              <Menu className="h-5 w-5" />
+            </button>
+            <Search className="ml-1 hidden h-4 w-4 shrink-0 text-slate-400 sm:block" />
+            <input
+              value={deviceQuery}
+              onChange={(e) => {
+                setDeviceQuery(e.target.value);
+                setPickerOpen(true);
+                if (!e.target.value) setSelectedDeviceId(null);
+              }}
+              onFocus={() => setPickerOpen(true)}
+              placeholder="Search by name or vehicle…"
+              className="h-12 min-w-0 flex-1 bg-transparent text-[15px] text-slate-800 outline-none placeholder:text-slate-400"
             />
+            {deviceQuery ? (
+              <button
+                type="button"
+                onClick={() => {
+                  setDeviceQuery("");
+                  setSelectedDeviceId(null);
+                  setPickerOpen(true);
+                }}
+                className="rounded-full p-2 text-slate-400 hover:bg-slate-100"
+                aria-label="Clear"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setPickerOpen((v) => !v)}
+                className="rounded-full p-2 text-slate-500 hover:bg-slate-100"
+                aria-label="Device list"
+              >
+                <List className="h-4 w-4" />
+              </button>
+            )}
           </div>
-          <div className="grid grid-cols-2 gap-2">
-            <div>
-              <label className="text-xs text-slate-500 mb-1.5 block">Start</label>
-              <Input
+
+          {pickerOpen && (
+            <div className="mt-2 max-h-[min(42vh,20rem)] overflow-y-auto rounded-2xl bg-white py-1 shadow-[0_4px_16px_rgba(0,0,0,0.18)]">
+              {filteredDevices.length === 0 ? (
+                <div className="px-4 py-6 text-center text-sm text-slate-500">
+                  {devices.length === 0 ? "No devices yet" : "No matches"}
+                </div>
+              ) : (
+                filteredDevices.map((d) => {
+                  const vehicle = vehicleLabel(d.vehicle);
+                  const active = selectedDeviceId === d.deviceId;
+                  const color = deviceColor(d.deviceId);
+                  return (
+                    <button
+                      key={d.deviceId}
+                      type="button"
+                      onClick={() => pickDevice(d)}
+                      className={`flex w-full items-start gap-3 px-4 py-3 text-left hover:bg-slate-50 ${
+                        active ? "bg-indigo-50/70" : ""
+                      }`}
+                    >
+                      <span
+                        className="mt-1 inline-block h-3 w-3 shrink-0 rounded-full ring-2 ring-white"
+                        style={{ background: color }}
+                      />
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-sm font-medium text-slate-900">
+                          {deviceDisplayName(d)}
+                        </span>
+                        <span className="mt-0.5 block truncate text-xs text-slate-500">
+                          {[vehicle && vehicle !== deviceDisplayName(d) ? vehicle : null, `ID ${d.deviceId.slice(0, 8)}…`]
+                            .filter(Boolean)
+                            .join(" · ")}
+                        </span>
+                      </span>
+                    </button>
+                  );
+                })
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Filters panel (collapsible) */}
+        <CollapsiblePanel
+          title="Route History"
+          minimized={filtersMinimized}
+          onToggle={() => setFiltersMinimized((v) => !v)}
+          accent={accent}
+        >
+          <div className="grid grid-cols-3 gap-2">
+            <label className="col-span-3 sm:col-span-1">
+              <span className="mb-1 block text-[11px] font-medium text-slate-500">Date</span>
+              <input
+                type="date"
+                value={date}
+                max={today}
+                onChange={(e) => setDate(e.target.value)}
+                className="h-9 w-full rounded-lg border border-slate-200 bg-slate-50 px-2 text-sm text-slate-800 outline-none focus:border-indigo-400"
+              />
+            </label>
+            <label>
+              <span className="mb-1 block text-[11px] font-medium text-slate-500">Start</span>
+              <input
                 type="time"
                 value={startTime}
                 onChange={(e) => setStartTime(e.target.value)}
-                className="bg-slate-900 border-slate-700 text-slate-200"
+                className="h-9 w-full rounded-lg border border-slate-200 bg-slate-50 px-2 text-sm text-slate-800 outline-none focus:border-indigo-400"
               />
-            </div>
-            <div>
-              <label className="text-xs text-slate-500 mb-1.5 block">End</label>
-              <Input
+            </label>
+            <label>
+              <span className="mb-1 block text-[11px] font-medium text-slate-500">End</span>
+              <input
                 type="time"
                 value={endTime}
                 onChange={(e) => setEndTime(e.target.value)}
-                className="bg-slate-900 border-slate-700 text-slate-200"
+                className="h-9 w-full rounded-lg border border-slate-200 bg-slate-50 px-2 text-sm text-slate-800 outline-none focus:border-indigo-400"
               />
-            </div>
+            </label>
           </div>
-          <div>
-            <Button
-              className="w-full bg-indigo-600 hover:bg-indigo-500 text-white"
-              onClick={viewRoute}
-              disabled={!selectedDeviceId || isLoading}
-            >
-              {isLoading ? (
-                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-              ) : (
-                <Route className="w-4 h-4 mr-2" />
-              )}
-              View route
-            </Button>
-          </div>
-        </div>
-        {formError && <p className="text-sm text-rose-400 mt-2">{formError}</p>}
-      </Card>
 
-      {/* Stats strip */}
-      {hasRoute && (
-        <Card className="bg-slate-900 border-slate-800 p-4">
-          <div className="flex flex-wrap items-center gap-x-8 gap-y-4">
-            <Metric icon={<Ruler className="w-3.5 h-3.5" />} label="Distance" value={`${stats.distance.toFixed(2)} km`} />
-            <Metric icon={<Clock className="w-3.5 h-3.5" />} label="Duration" value={stats.duration} />
-            <Metric icon={<MapPin className="w-3.5 h-3.5" />} label="Points" value={`${stats.count}`} />
-            <Metric icon={<Gauge className="w-3.5 h-3.5" />} label="Avg speed" value={`${stats.avgKmh.toFixed(1)} km/h`} />
-            <Metric icon={<Gauge className="w-3.5 h-3.5" />} label="Max speed" value={`${stats.maxKmh.toFixed(1)} km/h`} />
+          <label className="mt-2 block">
+            <span className="mb-1 block text-[11px] font-medium text-slate-500">
+              Speed limit (km/h)
+            </span>
+            <input
+              type="number"
+              min={10}
+              max={200}
+              step={5}
+              value={speedLimitKmh}
+              onChange={(e) => persistSpeedLimit(Number(e.target.value) || 60)}
+              className="h-9 w-full rounded-lg border border-slate-200 bg-slate-50 px-2 text-sm text-slate-800 outline-none focus:border-indigo-400"
+            />
+          </label>
 
-            <div className="hidden lg:block h-8 w-px bg-slate-800" />
+          <button
+            type="button"
+            onClick={viewRoute}
+            disabled={isLoading}
+            className="mt-3 flex h-10 w-full items-center justify-center gap-2 rounded-full text-sm font-semibold text-white shadow hover:brightness-110 disabled:opacity-60"
+            style={{ background: accent }}
+          >
+            {isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Route className="h-4 w-4" />}
+            View route
+          </button>
 
-            <div className="flex items-start gap-2 min-w-[180px] flex-1">
-              <Flag className="w-4 h-4 text-emerald-400 mt-0.5 shrink-0" />
-              <div className="min-w-0">
-                <p className="text-xs text-slate-500">Start</p>
-                <p className="text-slate-300 text-sm truncate" title={startPlace}>{startPlace || "Resolving…"}</p>
-              </div>
-            </div>
-            <div className="flex items-start gap-2 min-w-[180px] flex-1">
-              <Flag className="w-4 h-4 text-rose-400 mt-0.5 shrink-0" />
-              <div className="min-w-0">
-                <p className="text-xs text-slate-500">End</p>
-                <p className="text-slate-300 text-sm truncate" title={endPlace}>{endPlace || "Resolving…"}</p>
-              </div>
-            </div>
+          {formError && <p className="mt-2 text-xs text-rose-600">{formError}</p>}
+        </CollapsiblePanel>
 
-            <div className="flex gap-2 ml-auto">
-              <Button variant="outline" size="sm" className="border-slate-700 text-slate-300 bg-transparent hover:bg-slate-800" onClick={exportCsv}>
-                <Download className="w-4 h-4 mr-1.5" /> CSV
-              </Button>
-              <Button variant="outline" size="sm" className="border-slate-700 text-slate-300 bg-transparent hover:bg-slate-800" onClick={() => window.print()}>
-                <Printer className="w-4 h-4 mr-1.5" /> PDF
-              </Button>
-            </div>
-          </div>
-        </Card>
-      )}
-
-      {/* Full-width map region */}
-      <div className="relative h-[68vh] min-h-[460px] w-full rounded-xl overflow-hidden border border-slate-800 bg-slate-900">
-        {isLoading ? (
-          <div className="absolute inset-0 flex items-center justify-center">
-            <Loader2 className="h-6 w-6 animate-spin text-indigo-500" />
-          </div>
-        ) : hasRoute ? (
-          <>
-            <RouteHistoryMap points={displayedPoints} playbackIndex={playbackIndex} />
-
-            {/* Hint */}
-            <div className="pointer-events-none absolute top-3 left-1/2 -translate-x-1/2 z-[1000]">
-              <div className="flex items-center gap-1.5 rounded-full bg-slate-900/85 backdrop-blur px-3 py-1 text-xs text-slate-300 border border-slate-700 shadow-lg">
-                <MousePointerClick className="w-3.5 h-3.5 text-indigo-400" />
-                Click the route to inspect a point
-              </div>
+        {/* Stats panel */}
+        {hasRoute && (
+          <CollapsiblePanel
+            title={selectedLabel || "Trip stats"}
+            subtitle={selectedDeviceId ? `ID ${selectedDeviceId.slice(0, 12)}…` : undefined}
+            minimized={statsMinimized}
+            onToggle={() => setStatsMinimized((v) => !v)}
+            accent={accent}
+            actions={
+              <>
+                <IconBtn title="Export CSV" onClick={exportCsv}>
+                  <Download className="h-4 w-4" />
+                </IconBtn>
+                <IconBtn title="Print / PDF" onClick={() => window.print()}>
+                  <Printer className="h-4 w-4" />
+                </IconBtn>
+              </>
+            }
+          >
+            <div className="grid grid-cols-2 gap-2 text-xs">
+              <Stat icon={<Ruler className="h-3 w-3" />} label="Distance" value={`${stats!.distanceKm.toFixed(2)} km`} />
+              <Stat icon={<Clock className="h-3 w-3" />} label="Driving" value={formatDuration(stats!.drivingMs)} />
+              <Stat icon={<PauseCircle className="h-3 w-3" />} label="Idle" value={formatDuration(stats!.idleMs)} />
+              <Stat icon={<Gauge className="h-3 w-3" />} label="Avg / Max" value={`${stats!.avgKmh.toFixed(0)} / ${stats!.maxKmh.toFixed(0)}`} />
+              <Stat icon={<MapPin className="h-3 w-3" />} label="Stops" value={`${stats!.stops}`} />
+              <Stat icon={<AlertTriangle className="h-3 w-3" />} label="Violations" value={`${violations.length}`} />
             </div>
 
-            {/* Trips overlay */}
-            {sessions.length > 0 && (
-              <div className="absolute top-3 right-3 z-[1000] w-64 max-w-[80%]">
-                <div className="rounded-xl bg-slate-900/90 backdrop-blur border border-slate-700 shadow-2xl overflow-hidden">
-                  <button
-                    onClick={() => setTripsOpen((v) => !v)}
-                    className="flex w-full items-center justify-between px-3 py-2 text-sm font-semibold text-slate-200 hover:bg-slate-800/60"
-                  >
-                    <span>Trips in interval ({sessions.length})</span>
-                    {tripsOpen ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
-                  </button>
-                  {tripsOpen && (
-                    <div className="max-h-[46vh] overflow-y-auto p-2 space-y-2 border-t border-slate-800">
-                      <button
-                        onClick={() => setSelectedSubTrip(null)}
-                        className={`w-full text-left px-3 py-2 rounded-lg text-xs border transition-colors ${
-                          selectedSubTrip === null
-                            ? "border-indigo-500/50 text-indigo-200 bg-indigo-600/20"
-                            : "border-slate-700 text-slate-400 hover:bg-slate-800"
-                        }`}
-                      >
-                        All trips ({points.length} pts)
-                      </button>
-                      {sessions.map((s) => {
-                        const sPts = points.filter((p) => p.sessionId === s.sessionId).length;
-                        return (
-                          <button
-                            key={s._id}
-                            onClick={() => setSelectedSubTrip(s.sessionId)}
-                            className={`w-full text-left px-3 py-2 rounded-lg border transition-all ${
-                              selectedSubTrip === s.sessionId
-                                ? "bg-indigo-600/20 border-indigo-500/50"
-                                : "bg-slate-900 border-slate-800 hover:bg-slate-800/70"
-                            }`}
-                          >
-                            <div className="flex items-center justify-between gap-2">
-                              <p className="text-xs font-medium text-white truncate">{selectedLabel}</p>
-                              <Badge variant="outline" className={`${STATUS_COLORS[s.status] || ""} text-[10px]`}>
-                                {s.status}
-                              </Badge>
-                            </div>
-                            <p className="text-[11px] text-slate-400 mt-1">
-                              {format(new Date(s.startedAt), "MMM dd, HH:mm")}
-                              {s.stoppedAt && ` – ${format(new Date(s.stoppedAt), "HH:mm")}`}
-                            </p>
-                            <p className="text-[11px] text-slate-500 mt-0.5 flex items-center gap-1">
-                              <MapPin className="w-3 h-3" />
-                              {sPts || s.totalPoints} pts
-                            </p>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
-
-            {/* Playback overlay */}
-            {displayedPoints.length > 1 && (
-              <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-[1000] w-[min(680px,92%)]">
-                <div className="flex items-center gap-3 rounded-xl bg-slate-900/90 backdrop-blur border border-slate-700 shadow-2xl px-3 py-2">
-                  <Button size="sm" className="bg-indigo-600 hover:bg-indigo-500 text-white shrink-0" onClick={togglePlay}>
-                    {isPlaying ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4" />}
-                  </Button>
-                  <span className="text-xs font-mono text-slate-300 shrink-0 tabular-nums w-16">{playbackTime}</span>
-                  <input
-                    type="range"
-                    min={0}
-                    max={Math.max(0, displayedPoints.length - 1)}
-                    value={playbackIndex ?? 0}
-                    onChange={(e) => {
-                      setIsPlaying(false);
-                      setPlaybackIndex(Number(e.target.value));
-                    }}
-                    className="flex-1 accent-indigo-500"
-                  />
-                  <div className="flex gap-1 shrink-0">
-                    {[1, 2, 4].map((sp) => (
-                      <button
-                        key={sp}
-                        onClick={() => setSpeed(sp)}
-                        className={`text-xs px-2 py-1 rounded-md border transition-colors ${
-                          speed === sp
-                            ? "border-indigo-500/50 text-indigo-300 bg-indigo-600/20"
-                            : "border-slate-700 text-slate-400 hover:bg-slate-800"
-                        }`}
-                      >
-                        {sp}×
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            )}
-          </>
-        ) : (
-          <div className="absolute inset-0 flex items-center justify-center">
-            <div className="text-center">
-              <Route className="w-10 h-10 text-slate-700 mx-auto mb-3" />
-              <p className="text-slate-500">
-                {hasQueried
-                  ? "No GPS points in this interval."
-                  : "Choose an employee and interval, then View route."}
+            <div className="mt-2 space-y-1.5 border-t border-slate-100 pt-2 text-xs">
+              <p className="flex items-start gap-1.5 text-slate-600">
+                <Flag className="mt-0.5 h-3 w-3 shrink-0 text-emerald-500" />
+                <span className="line-clamp-2" title={startPlace}>
+                  {startPlace || "Resolving start…"}
+                </span>
+              </p>
+              <p className="flex items-start gap-1.5 text-slate-600">
+                <Flag className="mt-0.5 h-3 w-3 shrink-0 text-rose-500" />
+                <span className="line-clamp-2" title={endPlace}>
+                  {endPlace || "Resolving end…"}
+                </span>
               </p>
             </div>
-          </div>
+          </CollapsiblePanel>
+        )}
+
+        {/* Event timeline */}
+        {hasRoute && (
+          <CollapsiblePanel
+            title="Events"
+            subtitle={`${timeline.length}`}
+            minimized={timelineMinimized}
+            onToggle={() => setTimelineMinimized((v) => !v)}
+            accent={accent}
+          >
+            <div className="mb-2 flex flex-wrap gap-1">
+              {(
+                [
+                  ["all", "All"],
+                  ["idle", "Idle"],
+                  ["violations", "Speeding"],
+                  ["max", "Max"],
+                  ["trips", "Trips"],
+                ] as [EventFilter, string][]
+              ).map(([key, label]) => (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => setEventFilter(key)}
+                  className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-semibold ${
+                    eventFilter === key
+                      ? "text-white"
+                      : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+                  }`}
+                  style={eventFilter === key ? { background: accent } : undefined}
+                >
+                  {key === "all" && <Filter className="h-3 w-3" />}
+                  {label}
+                </button>
+              ))}
+            </div>
+
+            <div className="max-h-[min(32vh,16rem)] space-y-1 overflow-y-auto">
+              {timeline.length === 0 ? (
+                <p className="py-4 text-center text-xs text-slate-400">No events for this filter</p>
+              ) : (
+                timeline.map((it) => (
+                  <button
+                    key={it.id}
+                    type="button"
+                    onClick={() => {
+                      if (it.kind === "trip") {
+                        const sid = it.id.replace(/^trip-/, "");
+                        setSelectedSubTrip(sid);
+                      }
+                      setFocus(it.focus);
+                    }}
+                    className="flex w-full items-start gap-2 rounded-xl px-2 py-2 text-left hover:bg-slate-50"
+                  >
+                    <span className="mt-0.5">{kindIcon(it.kind)}</span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-xs font-medium text-slate-800">
+                        {it.title}
+                      </span>
+                      <span className="block truncate text-[11px] text-slate-500">{it.subtitle}</span>
+                    </span>
+                  </button>
+                ))
+              )}
+            </div>
+          </CollapsiblePanel>
         )}
       </div>
+
+      {/* ─── Right: trips list ─── */}
+      {hasQueried && sessions.length > 0 && (
+        <div className="absolute right-3 top-3 z-[1100] w-[min(calc(100%-1.5rem),18rem)] sm:right-4 sm:top-4">
+          <CollapsiblePanel
+            title={`Trips (${sessions.length})`}
+            minimized={tripsMinimized}
+            onToggle={() => setTripsMinimized((v) => !v)}
+            accent={accent}
+          >
+            <div className="max-h-[min(50vh,22rem)] space-y-1 overflow-y-auto">
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedSubTrip(null);
+                  setFocus({ type: "bounds" });
+                }}
+                className={`w-full rounded-xl px-3 py-2 text-left text-xs ${
+                  selectedSubTrip === null
+                    ? "font-semibold text-white"
+                    : "text-slate-600 hover:bg-slate-50"
+                }`}
+                style={selectedSubTrip === null ? { background: accent } : undefined}
+              >
+                All trips · {points.length} pts
+              </button>
+              {sessions.map((s) => {
+                const sPts = points.filter((p) => p.sessionId === s.sessionId).length;
+                const active = selectedSubTrip === s.sessionId;
+                return (
+                  <button
+                    key={s._id}
+                    type="button"
+                    onClick={() => {
+                      setSelectedSubTrip(s.sessionId);
+                      setFocus({ type: "bounds" });
+                    }}
+                    className={`w-full rounded-xl border px-3 py-2 text-left transition-colors ${
+                      active ? "border-transparent text-white" : "border-transparent hover:bg-slate-50"
+                    }`}
+                    style={active ? { background: accent } : undefined}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className={`truncate text-xs font-medium ${active ? "text-white" : "text-slate-900"}`}>
+                        {selectedLabel || s.deviceId}
+                      </span>
+                      {!active && (
+                        <span
+                          className={`shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-semibold ${
+                            STATUS_CHIP[s.status] || "bg-slate-400 text-white"
+                          }`}
+                        >
+                          {s.status}
+                        </span>
+                      )}
+                    </div>
+                    <p className={`mt-1 text-[11px] ${active ? "text-white/80" : "text-slate-500"}`}>
+                      {format(new Date(s.startedAt), "MMM dd, HH:mm")}
+                      {s.stoppedAt && ` – ${format(new Date(s.stoppedAt), "HH:mm")}`}
+                    </p>
+                    <p className={`mt-0.5 text-[11px] ${active ? "text-white/70" : "text-slate-400"}`}>
+                      {sPts || s.totalPoints} pts
+                    </p>
+                  </button>
+                );
+              })}
+            </div>
+          </CollapsiblePanel>
+        </div>
+      )}
+
+      {/* ─── Speed legend (bottom-left) ─── */}
+      {hasRoute && (
+        <div className="absolute bottom-20 left-3 z-[1100] sm:bottom-24 sm:left-4">
+          <div className="overflow-hidden rounded-2xl bg-white shadow-[0_2px_10px_rgba(0,0,0,0.16)]">
+            <button
+              type="button"
+              onClick={() => setLegendOpen((v) => !v)}
+              className="flex w-full items-center justify-between gap-3 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+            >
+              <span>Speed legend</span>
+              {legendOpen ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronUp className="h-3.5 w-3.5" />}
+            </button>
+            {legendOpen && (
+              <div className="space-y-1.5 border-t border-slate-100 px-3 py-2">
+                {SPEED_BANDS.map((b) => (
+                  <div key={b.band} className="flex items-center gap-2 text-[11px] text-slate-600">
+                    <span className="h-2.5 w-6 rounded-full" style={{ background: b.color }} />
+                    <span>
+                      {b.label}
+                      {b.maxKmh !== Infinity
+                        ? b.band === "idle"
+                          ? ` (< ${b.maxKmh} km/h)`
+                          : ` (< ${b.maxKmh} km/h)`
+                        : " (≥ 70 km/h)"}
+                    </span>
+                  </div>
+                ))}
+                <div className="flex items-center gap-2 border-t border-slate-100 pt-1.5 text-[11px] text-slate-600">
+                  <span className="h-2.5 w-6 rounded-full" style={{ background: accent }} />
+                  <span>Device accent</span>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ─── Playback bar ─── */}
+      {hasRoute && displayedPoints.length > 1 && (
+        <div className="absolute bottom-3 left-1/2 z-[1100] w-[min(720px,calc(100%-1.5rem))] -translate-x-1/2 sm:bottom-4">
+          <div className="flex items-center gap-3 rounded-full bg-white px-3 py-2 shadow-[0_2px_12px_rgba(0,0,0,0.2)]">
+            <button
+              type="button"
+              onClick={togglePlay}
+              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-white hover:brightness-110"
+              style={{ background: accent }}
+              aria-label={isPlaying ? "Pause" : "Play"}
+            >
+              {isPlaying ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
+            </button>
+            <span className="w-16 shrink-0 font-mono text-xs tabular-nums text-slate-600">
+              {playbackTime}
+            </span>
+            <input
+              type="range"
+              min={0}
+              max={Math.max(0, displayedPoints.length - 1)}
+              value={playbackIndex ?? 0}
+              onChange={(e) => {
+                setIsPlaying(false);
+                setPlaybackIndex(Number(e.target.value));
+              }}
+              className="min-w-0 flex-1"
+              style={{ accentColor: accent }}
+            />
+            <div className="flex shrink-0 gap-1">
+              {[1, 2, 4].map((sp) => (
+                <button
+                  key={sp}
+                  type="button"
+                  onClick={() => setSpeed(sp)}
+                  className={`rounded-full px-2 py-1 text-xs font-semibold ${
+                    speed === sp ? "text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+                  }`}
+                  style={speed === sp ? { background: accent } : undefined}
+                >
+                  {sp}×
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {!isLoading && hasQueried && !hasRoute && (
+        <div className="pointer-events-none absolute inset-x-0 bottom-16 z-[1000] flex justify-center px-4">
+          <div className="rounded-2xl bg-white px-4 py-3 text-center shadow-lg">
+            <p className="text-sm font-medium text-slate-800">No GPS points in this interval</p>
+            <p className="mt-0.5 text-xs text-slate-500">Try another device, day, or time range.</p>
+          </div>
+        </div>
+      )}
+
+      {!isLoading && !hasQueried && (
+        <div className="pointer-events-none absolute inset-x-0 bottom-8 z-[1000] flex justify-center px-4">
+          <div className="rounded-full bg-white/95 px-4 py-2 text-xs font-medium text-slate-600 shadow">
+            Search by name, set the interval, then View route
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
-function Metric({ icon, label, value }: { icon: React.ReactNode; label: string; value: string }) {
+function CollapsiblePanel({
+  title,
+  subtitle,
+  minimized,
+  onToggle,
+  children,
+  actions,
+  accent,
+}: {
+  title: string;
+  subtitle?: string;
+  minimized: boolean;
+  onToggle: () => void;
+  children: ReactNode;
+  actions?: ReactNode;
+  accent?: string;
+}) {
   return (
-    <div>
-      <p className="text-xs text-slate-500 flex items-center gap-1">
+    <div className="overflow-hidden rounded-2xl bg-white shadow-[0_2px_10px_rgba(0,0,0,0.16)]">
+      <div className="flex items-center gap-2 px-3 py-2">
+        {accent && (
+          <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: accent }} />
+        )}
+        <button
+          type="button"
+          onClick={onToggle}
+          className="min-w-0 flex-1 text-left"
+        >
+          <p className="truncate text-xs font-semibold uppercase tracking-wide text-slate-500">
+            {title}
+          </p>
+          {subtitle && (
+            <p className="truncate font-mono text-[10px] text-slate-400">{subtitle}</p>
+          )}
+        </button>
+        <div className="flex shrink-0 items-center gap-0.5">
+          {actions}
+          <button
+            type="button"
+            onClick={onToggle}
+            className="rounded-full p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+            aria-label={minimized ? "Expand" : "Minimize"}
+            title={minimized ? "Expand" : "Minimize"}
+          >
+            {minimized ? <ChevronDown className="h-4 w-4" /> : <Minus className="h-4 w-4" />}
+          </button>
+        </div>
+      </div>
+      {!minimized && <div className="border-t border-slate-100 p-3">{children}</div>}
+    </div>
+  );
+}
+
+function Stat({
+  icon,
+  label,
+  value,
+}: {
+  icon: ReactNode;
+  label: string;
+  value: string;
+}) {
+  return (
+    <div className="rounded-xl bg-slate-50 px-2.5 py-2">
+      <p className="flex items-center gap-1 text-[10px] font-medium uppercase tracking-wide text-slate-400">
         {icon}
         {label}
       </p>
-      <p className="font-bold text-white mt-0.5 whitespace-nowrap">{value}</p>
+      <p className="mt-0.5 text-sm font-semibold text-slate-900">{value}</p>
     </div>
+  );
+}
+
+function IconBtn({
+  children,
+  onClick,
+  title,
+}: {
+  children: ReactNode;
+  onClick: () => void;
+  title: string;
+}) {
+  return (
+    <button
+      type="button"
+      title={title}
+      onClick={onClick}
+      className="rounded-full p-1.5 text-slate-500 hover:bg-slate-100 hover:text-slate-800"
+    >
+      {children}
+    </button>
   );
 }

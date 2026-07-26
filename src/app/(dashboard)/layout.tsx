@@ -2,9 +2,9 @@ import { redirect } from "next/navigation";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { Sidebar } from "@/components/layout/Sidebar";
-import { Navbar } from "@/components/layout/Navbar";
 import { SidebarProvider } from "@/components/layout/SidebarContext";
 import { NavbarCountProvider } from "@/components/layout/NavbarCountContext";
+import { DashboardShell } from "@/components/layout/DashboardShell";
 
 export default async function DashboardLayout({
   children,
@@ -27,12 +27,7 @@ export default async function DashboardLayout({
       <NavbarCountProvider>
         <div className="flex h-screen bg-slate-950 overflow-hidden font-sans text-slate-300">
           <Sidebar />
-          <div className="flex-1 flex flex-col h-full overflow-hidden relative min-w-0">
-            <Navbar />
-            <main id="dashboard-scroll-container" className="flex-1 overflow-y-auto p-4 sm:p-6 md:p-8 relative">
-              {children}
-            </main>
-          </div>
+          <DashboardShell>{children}</DashboardShell>
         </div>
       </NavbarCountProvider>
     </SidebarProvider>

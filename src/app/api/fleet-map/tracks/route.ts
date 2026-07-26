@@ -3,7 +3,7 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import connectToDatabase from "@/lib/db";
 import LocationPoint from "@/models/LocationPoint";
-import mongoose from "mongoose";
+import { companyIdIn } from "@/lib/companyIdQuery";
 
 export const dynamic = "force-dynamic";
 
@@ -31,18 +31,16 @@ export async function GET(req: Request) {
 
     const query: Record<string, unknown> = { recordedAt: { $gte: cutoff } };
     if (session.user.role !== "super_admin") {
-      query.companyId = new mongoose.Types.ObjectId(session.user.companyId!);
+      query.companyId = companyIdIn(session.user.companyId!);
     }
     if (deviceId) query.deviceId = deviceId;
 
-    // Bounded fetch, oldest → newest so the polyline is drawn in travel order.
     const points = await LocationPoint.find(query)
       .select("deviceId latitude longitude recordedAt speedMetersPerSecond sequenceNumber")
       .sort({ deviceId: 1, recordedAt: 1 })
       .limit(20000)
       .lean();
 
-    // Group into one trail per device.
     const byDevice: Record<
       string,
       { deviceId: string; points: { lat: number; lng: number; recordedAt: Date; speed?: number }[] }

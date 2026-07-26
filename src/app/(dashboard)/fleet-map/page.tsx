@@ -1,19 +1,29 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
-import { Card } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
-import { Loader2, RefreshCw, Navigation, Satellite, Radio, StopCircle } from "lucide-react";
+import { useState, useEffect, useCallback, useRef, useMemo, type ReactNode } from "react";
+import {
+  Loader2,
+  RefreshCw,
+  Navigation,
+  Satellite,
+  Radio,
+  StopCircle,
+  Search,
+  X,
+  Crosshair,
+  Battery,
+  MapPin,
+  Menu,
+  List,
+} from "lucide-react";
 import dynamic from "next/dynamic";
-
-import type { DeviceTrack } from "./FleetMapCore";
+import { useSidebar } from "@/components/layout/SidebarContext";
+import type { DeviceTrack, LocationCommand } from "./FleetMapCore";
 
 const FleetMapCore = dynamic(() => import("./FleetMapCore"), { ssr: false });
 
-// How far back the live trail reaches, and how often the map refreshes.
 const TRACK_WINDOW_MINUTES = 120;
-const REFRESH_MS = 12000;
+const REFRESH_MS = 5000;
 
 interface DeviceState {
   _id: string;
@@ -30,13 +40,27 @@ interface DeviceState {
   ageMinutes: number | null;
 }
 
+const freshnessMeta = {
+  fresh: { label: "Live", chip: "bg-emerald-500 text-white", dot: "bg-emerald-400" },
+  stale: { label: "1–5m", chip: "bg-amber-500 text-white", dot: "bg-amber-400" },
+  old: { label: "> 5m", chip: "bg-rose-500 text-white", dot: "bg-rose-400" },
+  unavailable: { label: "N/A", chip: "bg-slate-500 text-white", dot: "bg-slate-400" },
+} as const;
+
 export default function FleetMapPage() {
+  const { open } = useSidebar();
   const [devices, setDevices] = useState<DeviceState[]>([]);
   const [tracks, setTracks] = useState<DeviceTrack[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [followFleet, setFollowFleet] = useState(true);
   const [commandStates, setCommandStates] = useState<Record<string, boolean>>({});
+  const [query, setQuery] = useState("");
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [listOpen, setListOpen] = useState(false);
+  const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
+  const [focusPoint, setFocusPoint] = useState<{ lat: number; lng: number } | null>(null);
   const autoRefreshRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const searchWrapRef = useRef<HTMLDivElement | null>(null);
 
   const fetchDevices = useCallback(async () => {
     try {
@@ -49,17 +73,30 @@ export default function FleetMapPage() {
         const data = await tracksRes.json();
         setTracks(data.tracks || []);
       }
-    } catch {}
-    finally { setIsLoading(false); }
+    } catch {
+      /* ignore */
+    } finally {
+      setIsLoading(false);
+    }
   }, []);
 
   useEffect(() => {
     fetchDevices();
     autoRefreshRef.current = setInterval(fetchDevices, REFRESH_MS);
-    return () => { if (autoRefreshRef.current) clearInterval(autoRefreshRef.current); };
+    return () => {
+      if (autoRefreshRef.current) clearInterval(autoRefreshRef.current);
+    };
   }, [fetchDevices]);
 
-  const sendCommand = async (deviceId: string, type: string) => {
+  useEffect(() => {
+    const onDocClick = (e: MouseEvent) => {
+      if (!searchWrapRef.current?.contains(e.target as Node)) setSearchOpen(false);
+    };
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, []);
+
+  const sendCommand = async (deviceId: string, type: LocationCommand) => {
     const key = `${deviceId}:${type}`;
     setCommandStates((prev) => ({ ...prev, [key]: true }));
     try {
@@ -69,189 +106,342 @@ export default function FleetMapPage() {
         body: JSON.stringify({ deviceId, type }),
       });
       setTimeout(fetchDevices, 3000);
-    } catch {}
-    finally {
-      setTimeout(() => setCommandStates((prev) => { const n = { ...prev }; delete n[key]; return n; }), 4000);
+    } catch {
+      /* ignore */
+    } finally {
+      setTimeout(() => {
+        setCommandStates((prev) => {
+          const next = { ...prev };
+          delete next[key];
+          return next;
+        });
+      }, 4000);
     }
   };
 
-  const freshnessColor = {
-    fresh: "border-emerald-500/50 text-emerald-400 bg-emerald-500/10",
-    stale: "border-amber-500/50 text-amber-400 bg-amber-500/10",
-    old: "border-rose-500/50 text-rose-400 bg-rose-500/10",
-    unavailable: "border-slate-600 text-slate-400 bg-slate-500/10",
-  };
+  const filteredDevices = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return devices;
+    return devices.filter((d) => {
+      const hay = `${d.employeeName || ""} ${d.vehicle || ""} ${d.deviceId}`.toLowerCase();
+      return hay.includes(q);
+    });
+  }, [devices, query]);
 
-  const freshnessLabel = {
-    fresh: "Live < 1m",
-    stale: "1–5m ago",
-    old: "> 5m ago",
-    unavailable: "No data",
-  };
-
-  const mappableDevices = devices.filter(
-    (d) => d.latestCoordinates?.lat && d.latestCoordinates?.lng
+  const mappableDevices = useMemo(
+    () =>
+      devices.filter((d) => d.latestCoordinates?.lat && d.latestCoordinates?.lng),
+    [devices]
   );
 
+  const selected = devices.find((d) => d.deviceId === selectedDeviceId) || null;
+
+  const focusDevice = (deviceId: string) => {
+    const d = devices.find((x) => x.deviceId === deviceId);
+    setSelectedDeviceId(deviceId);
+    setFollowFleet(false);
+    setSearchOpen(false);
+    setListOpen(false);
+    setQuery(d?.employeeName || d?.deviceId || "");
+    if (d?.latestCoordinates?.lat && d?.latestCoordinates?.lng) {
+      setFocusPoint({ lat: d.latestCoordinates.lat, lng: d.latestCoordinates.lng });
+    }
+  };
+
+  const clearSelection = () => {
+    setSelectedDeviceId(null);
+    setQuery("");
+    setFocusPoint(null);
+  };
+
+  const isCmd = (deviceId: string, type: string) => !!commandStates[`${deviceId}:${type}`];
+
   return (
-    <div className="space-y-6">
-      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
-        <div>
-          <h1 className="text-3xl font-bold tracking-tight text-white mb-2">Fleet GPS Map</h1>
-          <p className="text-slate-400">
-            Live device positions and movement trails from GPS tracking.{" "}
-            <span className="text-slate-500 text-xs">
-              Trails cover the last {TRACK_WINDOW_MINUTES / 60}h · auto-refreshes every {REFRESH_MS / 1000}s.
-            </span>
-          </p>
+    <div className="relative h-full w-full overflow-hidden bg-slate-200">
+      <FleetMapCore
+        devices={mappableDevices}
+        tracks={tracks}
+        autoFit={followFleet}
+        selectedDeviceId={selectedDeviceId}
+        onSelectDevice={focusDevice}
+        onCommand={sendCommand}
+        commandStates={commandStates}
+        focusPoint={focusPoint}
+      />
+
+      {isLoading && devices.length === 0 && (
+        <div className="absolute inset-0 z-[500] flex items-center justify-center bg-black/10">
+          <div className="flex items-center gap-2 rounded-full bg-white px-4 py-2 text-sm font-medium text-slate-700 shadow-lg">
+            <Loader2 className="h-4 w-4 animate-spin text-indigo-600" />
+            Loading map…
+          </div>
         </div>
-        <div className="flex items-center gap-2">
-          <Button
-            onClick={() => setFollowFleet((v) => !v)}
-            className={`px-4 py-2 rounded-md border transition-colors flex items-center gap-2 ${
-              followFleet
-                ? "bg-indigo-600/20 border-indigo-500/50 text-indigo-300 hover:bg-indigo-600/30"
-                : "bg-slate-800 border-slate-700 text-slate-300 hover:bg-slate-700"
-            }`}
-            title="Keep the map framed on all moving devices"
-          >
-            <Navigation className="w-4 h-4" />
-            {followFleet ? "Following" : "Follow off"}
-          </Button>
-          <Button
-            onClick={fetchDevices}
-            className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-100 rounded-md border border-slate-700 transition-colors flex items-center gap-2"
-          >
-            {isLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
-            Refresh
-          </Button>
+      )}
+
+      {/* Top-left Google-style search stack */}
+      <div className="absolute left-3 top-3 z-[1100] flex w-[min(calc(100%-5.5rem),22rem)] flex-col gap-2 sm:left-4 sm:top-4">
+        <div ref={searchWrapRef} className="relative">
+          <div className="flex items-center gap-1 rounded-full bg-white pl-2 pr-2 shadow-[0_2px_8px_rgba(0,0,0,0.18)]">
+            <button
+              type="button"
+              onClick={() => open()}
+              className="rounded-full p-2.5 text-slate-600 hover:bg-slate-100 sm:hidden"
+              aria-label="Open menu"
+            >
+              <Menu className="h-5 w-5" />
+            </button>
+            <Search className="ml-1 hidden h-4 w-4 shrink-0 text-slate-400 sm:block" />
+            <input
+              value={query}
+              onChange={(e) => {
+                setQuery(e.target.value);
+                setSearchOpen(true);
+              }}
+              onFocus={() => setSearchOpen(true)}
+              placeholder="Search fleet…"
+              className="h-12 min-w-0 flex-1 bg-transparent text-[15px] text-slate-800 outline-none placeholder:text-slate-400"
+            />
+            {query ? (
+              <button
+                type="button"
+                onClick={clearSelection}
+                className="rounded-full p-2 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+                aria-label="Clear"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setListOpen((v) => !v)}
+                className={`rounded-full p-2 ${listOpen ? "bg-indigo-50 text-indigo-600" : "text-slate-500 hover:bg-slate-100"}`}
+                aria-label="Device list"
+                title="Device list"
+              >
+                <List className="h-4 w-4" />
+              </button>
+            )}
+          </div>
+
+          {/* Search / list dropdown — only as tall as content */}
+          {(searchOpen || listOpen) && (
+            <div className="mt-2 max-h-[min(50vh,22rem)] overflow-y-auto rounded-2xl bg-white py-1 shadow-[0_4px_16px_rgba(0,0,0,0.18)]">
+              {filteredDevices.length === 0 ? (
+                <div className="px-4 py-6 text-center text-sm text-slate-500">
+                  {devices.length === 0 ? "No GPS devices yet" : "No matches"}
+                </div>
+              ) : (
+                filteredDevices.map((d) => {
+                  const meta = freshnessMeta[d.freshness];
+                  const active = selectedDeviceId === d.deviceId;
+                  return (
+                    <button
+                      key={d.deviceId}
+                      type="button"
+                      onClick={() => focusDevice(d.deviceId)}
+                      className={`flex w-full items-start gap-3 px-4 py-3 text-left hover:bg-slate-50 ${
+                        active ? "bg-indigo-50/70" : ""
+                      }`}
+                    >
+                      <span className={`mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full ${meta.dot}`} />
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-sm font-medium text-slate-900">
+                          {d.employeeName || d.deviceId}
+                        </span>
+                        <span className="mt-0.5 block truncate text-xs text-slate-500">
+                          {d.vehicle ? `${d.vehicle} · ` : ""}
+                          {d.latestCoordinates?.lat
+                            ? `${d.latestCoordinates.lat.toFixed(4)}, ${d.latestCoordinates.lng.toFixed(4)}`
+                            : "No location"}
+                        </span>
+                      </span>
+                      <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold ${meta.chip}`}>
+                        {meta.label}
+                      </span>
+                    </button>
+                  );
+                })
+              )}
+            </div>
+          )}
         </div>
+
+        {/* Compact selected-device card (Google place card style) */}
+        {selected && !searchOpen && !listOpen && (
+          <div className="rounded-2xl bg-white p-3 shadow-[0_2px_10px_rgba(0,0,0,0.16)]">
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0">
+                <p className="truncate text-[15px] font-semibold text-slate-900">
+                  {selected.employeeName || selected.deviceId}
+                </p>
+                {selected.vehicle && (
+                  <p className="truncate font-mono text-xs text-slate-500">{selected.vehicle}</p>
+                )}
+              </div>
+              <div className="flex items-center gap-1">
+                <span
+                  className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${freshnessMeta[selected.freshness].chip}`}
+                >
+                  {freshnessMeta[selected.freshness].label}
+                </span>
+                <button
+                  type="button"
+                  onClick={clearSelection}
+                  className="rounded-full p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+                  aria-label="Close"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+            </div>
+
+            <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-slate-500">
+              {selected.latestCoordinates?.lat && (
+                <span className="inline-flex items-center gap-1 font-mono">
+                  <MapPin className="h-3 w-3" />
+                  {selected.latestCoordinates.lat.toFixed(5)}, {selected.latestCoordinates.lng.toFixed(5)}
+                </span>
+              )}
+              {selected.latestSpeed != null && (
+                <span>{(selected.latestSpeed * 3.6).toFixed(0)} km/h</span>
+              )}
+              {selected.batteryPercent != null && (
+                <span className="inline-flex items-center gap-1">
+                  <Battery className="h-3 w-3" />
+                  {selected.batteryPercent}%
+                </span>
+              )}
+            </div>
+
+            <div className="mt-3 grid grid-cols-4 gap-1.5">
+              <ActionBtn
+                label="Latest"
+                icon={<Navigation className="h-3.5 w-3.5" />}
+                busy={isCmd(selected.deviceId, "location_latest")}
+                onClick={() => sendCommand(selected.deviceId, "location_latest")}
+              />
+              <ActionBtn
+                label="Route"
+                icon={<Satellite className="h-3.5 w-3.5" />}
+                busy={isCmd(selected.deviceId, "location_upload")}
+                onClick={() => sendCommand(selected.deviceId, "location_upload")}
+              />
+              <ActionBtn
+                label="Live"
+                icon={<Radio className="h-3.5 w-3.5" />}
+                busy={isCmd(selected.deviceId, "location_live_mode")}
+                onClick={() => sendCommand(selected.deviceId, "location_live_mode")}
+                tone="live"
+              />
+              <ActionBtn
+                label="Stop"
+                icon={<StopCircle className="h-3.5 w-3.5" />}
+                busy={isCmd(selected.deviceId, "location_stop_live_mode")}
+                onClick={() => sendCommand(selected.deviceId, "location_stop_live_mode")}
+                tone="stop"
+              />
+            </div>
+          </div>
+        )}
       </div>
 
-      {/* Freshness legend */}
-      <div className="flex flex-wrap gap-3">
-        {(["fresh", "stale", "old", "unavailable"] as const).map((f) => (
-          <Badge key={f} variant="outline" className={freshnessColor[f]}>
-            {freshnessLabel[f]}
-          </Badge>
+      {/* Right-side map FABs */}
+      <div className="absolute right-3 top-3 z-[1100] flex flex-col gap-2 sm:right-4 sm:top-4">
+        <Fab
+          title={followFleet ? "Following fleet" : "Follow fleet"}
+          active={followFleet}
+          onClick={() => {
+            setFollowFleet((v) => !v);
+            if (!followFleet) setFocusPoint(null);
+          }}
+        >
+          <Crosshair className="h-5 w-5" />
+        </Fab>
+        <Fab title="Refresh" onClick={fetchDevices}>
+          {isLoading ? <Loader2 className="h-5 w-5 animate-spin" /> : <RefreshCw className="h-5 w-5" />}
+        </Fab>
+      </div>
+
+      {/* Bottom-left compact legend */}
+      <div className="absolute bottom-3 left-3 z-[1000] flex flex-wrap gap-1 rounded-full bg-white/95 p-1.5 shadow-[0_2px_8px_rgba(0,0,0,0.15)] sm:bottom-4 sm:left-4">
+        {(Object.keys(freshnessMeta) as Array<keyof typeof freshnessMeta>).map((key) => (
+          <span
+            key={key}
+            className="inline-flex items-center gap-1 rounded-full px-2 py-1 text-[11px] font-medium text-slate-600"
+          >
+            <span className={`h-2 w-2 rounded-full ${freshnessMeta[key].dot}`} />
+            {freshnessMeta[key].label}
+          </span>
         ))}
       </div>
 
-      {/* Map */}
-      <Card className="bg-slate-900 border-slate-800 text-slate-100 p-1">
-        {isLoading && devices.length === 0 ? (
-          <div className="h-[480px] w-full flex items-center justify-center">
-            <Loader2 className="h-8 w-8 animate-spin text-indigo-500" />
-          </div>
-        ) : (
-          <FleetMapCore
-            devices={mappableDevices}
-            freshnessColor={freshnessColor}
-            tracks={tracks}
-            autoFit={followFleet}
-          />
-        )}
-      </Card>
-
-      {/* Device cards */}
-      {devices.length > 0 && (
-        <div>
-          <h2 className="text-lg font-semibold text-white mb-3">
-            Active Devices <span className="text-slate-500 font-normal text-sm">({devices.length})</span>
-          </h2>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-            {devices.map((d) => {
-              const isCmd = (type: string) => !!commandStates[`${d.deviceId}:${type}`];
-              return (
-                <div key={d.deviceId} className="bg-slate-900 border border-slate-800 rounded-xl p-4 space-y-3">
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0">
-                      <p className="font-semibold text-white truncate">{d.employeeName || d.deviceId}</p>
-                      {d.vehicle && <p className="text-xs text-slate-400 font-mono">{d.vehicle}</p>}
-                    </div>
-                    <Badge variant="outline" className={freshnessColor[d.freshness]}>
-                      {freshnessLabel[d.freshness]}
-                    </Badge>
-                  </div>
-
-                  {d.latestCoordinates?.lat ? (
-                    <div className="text-xs text-slate-500 font-mono">
-                      {d.latestCoordinates.lat.toFixed(5)}, {d.latestCoordinates.lng.toFixed(5)}
-                      {d.latestSpeed != null && (
-                        <span className="ml-2 text-slate-400">{(d.latestSpeed * 3.6).toFixed(1)} km/h</span>
-                      )}
-                    </div>
-                  ) : (
-                    <p className="text-xs text-slate-600">No location data</p>
-                  )}
-
-                  {d.batteryPercent != null && (
-                    <div className="flex items-center gap-1 text-xs">
-                      <div className={`w-2 h-2 rounded-full ${d.batteryPercent > 20 ? "bg-emerald-400" : "bg-rose-400"}`} />
-                      <span className="text-slate-400">Battery: {d.batteryPercent}%</span>
-                    </div>
-                  )}
-
-                  <div className="flex gap-2 flex-wrap">
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      className="border-slate-700 text-slate-300 bg-transparent hover:bg-slate-800 text-xs h-8"
-                      onClick={() => sendCommand(d.deviceId, "location_latest")}
-                      disabled={isCmd("location_latest")}
-                      title="Request latest location"
-                    >
-                      {isCmd("location_latest") ? <Loader2 className="w-3 h-3 animate-spin mr-1" /> : <Navigation className="w-3 h-3 mr-1" />}
-                      Latest
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      className="border-slate-700 text-slate-300 bg-transparent hover:bg-slate-800 text-xs h-8"
-                      onClick={() => sendCommand(d.deviceId, "location_upload")}
-                      disabled={isCmd("location_upload")}
-                      title="Request route upload"
-                    >
-                      {isCmd("location_upload") ? <Loader2 className="w-3 h-3 animate-spin mr-1" /> : <Satellite className="w-3 h-3 mr-1" />}
-                      Route
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      className="border-indigo-700/50 text-indigo-400 bg-transparent hover:bg-indigo-500/10 text-xs h-8"
-                      onClick={() => sendCommand(d.deviceId, "location_live_mode")}
-                      disabled={isCmd("location_live_mode")}
-                      title="Start live mode"
-                    >
-                      {isCmd("location_live_mode") ? <Loader2 className="w-3 h-3 animate-spin mr-1" /> : <Radio className="w-3 h-3 mr-1" />}
-                      Live
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      className="border-rose-700/50 text-rose-400 bg-transparent hover:bg-rose-500/10 text-xs h-8"
-                      onClick={() => sendCommand(d.deviceId, "location_stop_live_mode")}
-                      disabled={isCmd("location_stop_live_mode")}
-                      title="Stop live mode"
-                    >
-                      {isCmd("location_stop_live_mode") ? <Loader2 className="w-3 h-3 animate-spin mr-1" /> : <StopCircle className="w-3 h-3 mr-1" />}
-                      Stop
-                    </Button>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
-
       {!isLoading && devices.length === 0 && (
-        <div className="text-center py-16 bg-slate-900 rounded-xl border border-slate-800 border-dashed">
-          <Satellite className="w-12 h-12 text-slate-600 mx-auto mb-3" />
-          <p className="text-slate-400 font-medium">No active GPS devices</p>
-          <p className="text-slate-500 text-sm mt-1">Enroll devices via Device Enrollment and enable GPS tracking on the Android app.</p>
+        <div className="pointer-events-none absolute inset-x-0 bottom-16 z-[1000] flex justify-center px-4">
+          <div className="pointer-events-auto rounded-2xl bg-white px-4 py-3 text-center shadow-lg">
+            <p className="text-sm font-medium text-slate-800">No active GPS devices</p>
+            <p className="mt-0.5 text-xs text-slate-500">Enroll a device and start duty on the phone app.</p>
+          </div>
         </div>
       )}
     </div>
+  );
+}
+
+function Fab({
+  children,
+  onClick,
+  title,
+  active,
+}: {
+  children: ReactNode;
+  onClick: () => void;
+  title: string;
+  active?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      title={title}
+      onClick={onClick}
+      className={`flex h-11 w-11 items-center justify-center rounded-full shadow-[0_2px_8px_rgba(0,0,0,0.2)] transition-colors ${
+        active
+          ? "bg-indigo-600 text-white hover:bg-indigo-500"
+          : "bg-white text-slate-700 hover:bg-slate-50"
+      }`}
+    >
+      {children}
+    </button>
+  );
+}
+
+function ActionBtn({
+  label,
+  icon,
+  busy,
+  onClick,
+  tone = "neutral",
+}: {
+  label: string;
+  icon: ReactNode;
+  busy: boolean;
+  onClick: () => void;
+  tone?: "neutral" | "live" | "stop";
+}) {
+  const toneClass =
+    tone === "live"
+      ? "text-indigo-700 hover:bg-indigo-50"
+      : tone === "stop"
+        ? "text-rose-700 hover:bg-rose-50"
+        : "text-slate-700 hover:bg-slate-50";
+  return (
+    <button
+      type="button"
+      disabled={busy}
+      onClick={onClick}
+      className={`flex flex-col items-center justify-center gap-1 rounded-xl bg-slate-50 px-1 py-2 text-[10px] font-semibold disabled:opacity-50 ${toneClass}`}
+    >
+      {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : icon}
+      {label}
+    </button>
   );
 }

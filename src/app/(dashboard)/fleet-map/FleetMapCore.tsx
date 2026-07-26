@@ -1,11 +1,21 @@
 "use client";
 
-import { MapContainer, TileLayer, Marker, Popup, Circle, Polyline, CircleMarker, useMap } from "react-leaflet";
+import {
+  MapContainer,
+  TileLayer,
+  Marker,
+  Popup,
+  Circle,
+  Polyline,
+  CircleMarker,
+  ZoomControl,
+  useMap,
+} from "react-leaflet";
 import "leaflet/dist/leaflet.css";
 import L from "leaflet";
-import { useEffect } from "react";
+import { useEffect, type ReactNode } from "react";
+import { Loader2, Navigation, Radio, Satellite, StopCircle } from "lucide-react";
 
-// Fix default icons
 const DefaultIcon = L.icon({
   iconUrl: "https://unpkg.com/leaflet@1.7.1/dist/images/marker-icon.png",
   iconRetinaUrl: "https://unpkg.com/leaflet@1.7.1/dist/images/marker-icon-2x.png",
@@ -17,27 +27,22 @@ const DefaultIcon = L.icon({
 });
 L.Marker.prototype.options.icon = DefaultIcon;
 
-// Coloured circle markers per freshness
-function makeIcon(color: string) {
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="32" viewBox="0 0 24 32">
-    <circle cx="12" cy="12" r="10" fill="${color}" stroke="white" stroke-width="2"/>
-    <line x1="12" y1="22" x2="12" y2="32" stroke="${color}" stroke-width="2"/>
+function makeIcon(color: string, selected = false) {
+  const size = selected ? 30 : 24;
+  const height = selected ? 40 : 32;
+  const r = selected ? 12 : 10;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${height}" viewBox="0 0 ${size} ${height}">
+    <circle cx="${size / 2}" cy="${size / 2}" r="${r}" fill="${color}" stroke="white" stroke-width="${selected ? 3 : 2}"/>
+    <line x1="${size / 2}" y1="${size / 2 + r}" x2="${size / 2}" y2="${height}" stroke="${color}" stroke-width="2"/>
   </svg>`;
   return L.divIcon({
     html: svg,
     className: "",
-    iconSize: [24, 32],
-    iconAnchor: [12, 32],
-    popupAnchor: [0, -34],
+    iconSize: [size, height],
+    iconAnchor: [size / 2, height],
+    popupAnchor: [0, -height + 8],
   });
 }
-
-const ICONS = {
-  fresh: makeIcon("#10b981"),
-  stale: makeIcon("#f59e0b"),
-  old: makeIcon("#ef4444"),
-  unavailable: makeIcon("#64748b"),
-};
 
 const TRACK_COLOR: Record<string, string> = {
   fresh: "#10b981",
@@ -64,15 +69,23 @@ export interface DeviceTrack {
   points: { lat: number; lng: number; recordedAt?: string; speed?: number }[];
 }
 
+export type LocationCommand =
+  | "location_latest"
+  | "location_upload"
+  | "location_live_mode"
+  | "location_stop_live_mode";
+
 interface Props {
   devices: DeviceState[];
-  freshnessColor: Record<string, string>;
   tracks?: DeviceTrack[];
-  /** When true, keep the viewport pinned to all points as they update. */
   autoFit?: boolean;
+  selectedDeviceId?: string | null;
+  onSelectDevice?: (deviceId: string) => void;
+  onCommand?: (deviceId: string, type: LocationCommand) => void;
+  commandStates?: Record<string, boolean>;
+  focusPoint?: { lat: number; lng: number } | null;
 }
 
-// Fits the map to every marker + trail point whenever the data changes.
 function FitBounds({ points, enabled }: { points: [number, number][]; enabled: boolean }) {
   const map = useMap();
   useEffect(() => {
@@ -81,50 +94,114 @@ function FitBounds({ points, enabled }: { points: [number, number][]; enabled: b
       map.setView(points[0], Math.max(map.getZoom(), 15));
       return;
     }
-    map.fitBounds(L.latLngBounds(points), { padding: [40, 40], maxZoom: 16 });
+    map.fitBounds(L.latLngBounds(points), { padding: [72, 72], maxZoom: 16 });
   }, [enabled, map, points]);
   return null;
 }
 
-export default function FleetMapCore({ devices, tracks = [], autoFit = true }: Props) {
-  if (devices.length === 0) {
-    return (
-      <div className="h-[480px] w-full bg-slate-900 border border-slate-800 rounded-xl flex items-center justify-center">
-        <p className="text-slate-500 text-lg">No GPS locations available yet.</p>
-      </div>
-    );
-  }
+function FocusOn({ point }: { point: { lat: number; lng: number } | null | undefined }) {
+  const map = useMap();
+  useEffect(() => {
+    if (!point) return;
+    map.flyTo([point.lat, point.lng], Math.max(map.getZoom(), 15), { duration: 0.6 });
+  }, [map, point?.lat, point?.lng]);
+  return null;
+}
 
+function CmdButton({
+  label,
+  icon,
+  busy,
+  onClick,
+  tone = "neutral",
+}: {
+  label: string;
+  icon: ReactNode;
+  busy: boolean;
+  onClick: () => void;
+  tone?: "neutral" | "live" | "stop";
+}) {
+  const toneClass =
+    tone === "live"
+      ? "border-indigo-300 text-indigo-700 hover:bg-indigo-50"
+      : tone === "stop"
+        ? "border-rose-300 text-rose-700 hover:bg-rose-50"
+        : "border-slate-200 text-slate-700 hover:bg-slate-50";
+  return (
+    <button
+      type="button"
+      disabled={busy}
+      onClick={(e) => {
+        e.stopPropagation();
+        onClick();
+      }}
+      className={`inline-flex items-center gap-1 rounded-md border px-2 py-1 text-[11px] font-medium disabled:opacity-50 ${toneClass}`}
+    >
+      {busy ? <Loader2 className="h-3 w-3 animate-spin" /> : icon}
+      {label}
+    </button>
+  );
+}
+
+export default function FleetMapCore({
+  devices,
+  tracks = [],
+  autoFit = true,
+  selectedDeviceId = null,
+  onSelectDevice,
+  onCommand,
+  commandStates = {},
+  focusPoint = null,
+}: Props) {
   const trackByDevice = new Map(tracks.map((t) => [t.deviceId, t.points]));
+  const center: [number, number] =
+    devices.length > 0
+      ? [devices[0].latestCoordinates.lat, devices[0].latestCoordinates.lng]
+      : [20.5937, 78.9629];
 
-  const center: [number, number] = [devices[0].latestCoordinates.lat, devices[0].latestCoordinates.lng];
-
-  // Collect every coordinate (markers + trails) so the viewport frames the whole fleet.
   const allPoints: [number, number][] = [];
   devices.forEach((d) => allPoints.push([d.latestCoordinates.lat, d.latestCoordinates.lng]));
   tracks.forEach((t) => t.points.forEach((p) => allPoints.push([p.lat, p.lng])));
 
+  const isCmd = (deviceId: string, type: string) => !!commandStates[`${deviceId}:${type}`];
+
   return (
-    <div className="h-[480px] w-full rounded-xl overflow-hidden border border-slate-800 shadow-2xl relative z-0">
-      <MapContainer center={center} zoom={13} style={{ height: "100%", width: "100%", zIndex: 0 }}>
+    <div className="absolute inset-0 z-0 h-full w-full">
+      <MapContainer
+        center={center}
+        zoom={devices.length ? 13 : 5}
+        style={{ height: "100%", width: "100%" }}
+        zoomControl={false}
+        attributionControl={false}
+      >
         <TileLayer
           attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
           url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
         />
-        <FitBounds points={allPoints} enabled={autoFit} />
+        <ZoomControl position="bottomright" />
+        <FitBounds points={allPoints} enabled={autoFit && !focusPoint} />
+        <FocusOn point={focusPoint} />
+
         {devices.map((d) => {
           const trail = trackByDevice.get(d.deviceId) || [];
           const latlngs: [number, number][] = trail
             .filter((p) => p.lat != null && p.lng != null)
             .map((p) => [p.lat, p.lng]);
           const color = TRACK_COLOR[d.freshness];
+          const selected = selectedDeviceId === d.deviceId;
+
           return (
             <span key={d.deviceId}>
-              {/* Movement trail */}
               {latlngs.length > 1 && (
                 <>
-                  <Polyline positions={latlngs} pathOptions={{ color, weight: 4, opacity: 0.85 }} />
-                  {/* Start-of-window marker */}
+                  <Polyline
+                    positions={latlngs}
+                    pathOptions={{
+                      color,
+                      weight: selected ? 5 : 4,
+                      opacity: selected ? 0.95 : 0.8,
+                    }}
+                  />
                   <CircleMarker
                     center={latlngs[0]}
                     radius={5}
@@ -133,7 +210,9 @@ export default function FleetMapCore({ devices, tracks = [], autoFit = true }: P
                     <Popup>
                       <p className="text-xs font-semibold text-slate-700">Trail start</p>
                       {trail[0].recordedAt && (
-                        <p className="text-xs text-slate-500">{new Date(trail[0].recordedAt).toLocaleTimeString()}</p>
+                        <p className="text-xs text-slate-500">
+                          {new Date(trail[0].recordedAt).toLocaleTimeString()}
+                        </p>
                       )}
                     </Popup>
                   </CircleMarker>
@@ -152,27 +231,61 @@ export default function FleetMapCore({ devices, tracks = [], autoFit = true }: P
                   }}
                 />
               )}
+
               <Marker
                 position={[d.latestCoordinates.lat, d.latestCoordinates.lng]}
-                icon={ICONS[d.freshness]}
+                icon={makeIcon(color, selected)}
+                eventHandlers={{
+                  click: () => onSelectDevice?.(d.deviceId),
+                }}
               >
-                <Popup className="rounded-xl overflow-hidden">
-                  <div className="space-y-2 min-w-[180px] font-sans text-sm">
-                    <p className="font-bold text-slate-900">{d.employeeName || d.deviceId}</p>
-                    {d.vehicle && <p className="font-mono text-xs text-slate-600">{d.vehicle}</p>}
-                    {d.latestSpeed != null && (
-                      <p className="text-slate-600 text-xs">{(d.latestSpeed * 3.6).toFixed(1)} km/h</p>
-                    )}
-                    {latlngs.length > 1 && (
-                      <p className="text-slate-500 text-xs">{latlngs.length} points in trail</p>
-                    )}
-                    {d.batteryPercent != null && (
-                      <p className="text-xs text-slate-500">Battery: {d.batteryPercent}%</p>
-                    )}
-                    {d.lastReceivedAt && (
-                      <p className="text-xs text-slate-400">
-                        {d.ageMinutes != null ? `${d.ageMinutes < 1 ? "< 1" : Math.round(d.ageMinutes)} min ago` : ""}
-                      </p>
+                <Popup className="fleet-map-popup">
+                  <div className="min-w-[210px] space-y-2 font-sans text-sm">
+                    <div>
+                      <p className="font-bold text-slate-900">{d.employeeName || d.deviceId}</p>
+                      {d.vehicle && <p className="font-mono text-xs text-slate-600">{d.vehicle}</p>}
+                    </div>
+                    <div className="space-y-0.5 text-xs text-slate-600">
+                      {d.latestSpeed != null && (
+                        <p>{(d.latestSpeed * 3.6).toFixed(1)} km/h</p>
+                      )}
+                      {latlngs.length > 1 && <p>{latlngs.length} points in trail</p>}
+                      {d.batteryPercent != null && <p>Battery: {d.batteryPercent}%</p>}
+                      {d.lastReceivedAt && d.ageMinutes != null && (
+                        <p className="text-slate-400">
+                          {d.ageMinutes < 1 ? "< 1" : Math.round(d.ageMinutes)} min ago
+                        </p>
+                      )}
+                    </div>
+                    {onCommand && (
+                      <div className="flex flex-wrap gap-1.5 border-t border-slate-100 pt-2">
+                        <CmdButton
+                          label="Latest"
+                          icon={<Navigation className="h-3 w-3" />}
+                          busy={isCmd(d.deviceId, "location_latest")}
+                          onClick={() => onCommand(d.deviceId, "location_latest")}
+                        />
+                        <CmdButton
+                          label="Route"
+                          icon={<Satellite className="h-3 w-3" />}
+                          busy={isCmd(d.deviceId, "location_upload")}
+                          onClick={() => onCommand(d.deviceId, "location_upload")}
+                        />
+                        <CmdButton
+                          label="Live"
+                          icon={<Radio className="h-3 w-3" />}
+                          busy={isCmd(d.deviceId, "location_live_mode")}
+                          onClick={() => onCommand(d.deviceId, "location_live_mode")}
+                          tone="live"
+                        />
+                        <CmdButton
+                          label="Stop"
+                          icon={<StopCircle className="h-3 w-3" />}
+                          busy={isCmd(d.deviceId, "location_stop_live_mode")}
+                          onClick={() => onCommand(d.deviceId, "location_stop_live_mode")}
+                          tone="stop"
+                        />
+                      </div>
                     )}
                   </div>
                 </Popup>
