@@ -2,7 +2,7 @@ import mongoose, { Schema, Document } from 'mongoose';
 
 export interface ILocationCommand extends Document {
   deviceId: string;
-  type: 'location_upload' | 'location_latest' | 'location_live_mode' | 'location_stop_live_mode';
+  type: 'location_upload' | 'location_latest' | 'location_live_mode' | 'location_stop_live_mode' | 'location_start_tracking' | 'location_stop_tracking';
   status: 'REQUESTED' | 'DELIVERED' | 'UPLOADING' | 'COMPLETED' | 'EXPIRED' | 'FAILED';
   sessionId?: string;
   fromTime?: Date;
@@ -18,7 +18,7 @@ const LocationCommandSchema = new Schema(
     deviceId: { type: String, required: true, index: true },
     type: {
       type: String,
-      enum: ['location_upload', 'location_latest', 'location_live_mode', 'location_stop_live_mode'],
+      enum: ['location_upload', 'location_latest', 'location_live_mode', 'location_stop_live_mode', 'location_start_tracking', 'location_stop_tracking'],
       required: true,
     },
     status: {

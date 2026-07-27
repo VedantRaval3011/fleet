@@ -315,30 +315,30 @@ export default function FleetMapPage() {
 
             <div className="mt-3 grid grid-cols-4 gap-1.5">
               <ActionBtn
+                label="Start"
+                icon={<Radio className="h-3.5 w-3.5" />}
+                busy={isCmd(selected.deviceId, "location_start_tracking")}
+                onClick={() => sendCommand(selected.deviceId, "location_start_tracking")}
+                tone="live"
+              />
+              <ActionBtn
+                label="End"
+                icon={<StopCircle className="h-3.5 w-3.5" />}
+                busy={isCmd(selected.deviceId, "location_stop_tracking")}
+                onClick={() => sendCommand(selected.deviceId, "location_stop_tracking")}
+                tone="stop"
+              />
+              <ActionBtn
                 label="Latest"
                 icon={<Navigation className="h-3.5 w-3.5" />}
                 busy={isCmd(selected.deviceId, "location_latest")}
                 onClick={() => sendCommand(selected.deviceId, "location_latest")}
               />
               <ActionBtn
-                label="Route"
+                label="Upload"
                 icon={<Satellite className="h-3.5 w-3.5" />}
                 busy={isCmd(selected.deviceId, "location_upload")}
                 onClick={() => sendCommand(selected.deviceId, "location_upload")}
-              />
-              <ActionBtn
-                label="Live"
-                icon={<Radio className="h-3.5 w-3.5" />}
-                busy={isCmd(selected.deviceId, "location_live_mode")}
-                onClick={() => sendCommand(selected.deviceId, "location_live_mode")}
-                tone="live"
-              />
-              <ActionBtn
-                label="Stop"
-                icon={<StopCircle className="h-3.5 w-3.5" />}
-                busy={isCmd(selected.deviceId, "location_stop_live_mode")}
-                onClick={() => sendCommand(selected.deviceId, "location_stop_live_mode")}
-                tone="stop"
               />
             </div>
           </div>
@@ -379,7 +379,7 @@ export default function FleetMapPage() {
         <div className="pointer-events-none absolute inset-x-0 bottom-16 z-[1000] flex justify-center px-4">
           <div className="pointer-events-auto rounded-2xl bg-white px-4 py-3 text-center shadow-lg">
             <p className="text-sm font-medium text-slate-800">No active GPS devices</p>
-            <p className="mt-0.5 text-xs text-slate-500">Enroll a device and start duty on the phone app.</p>
+            <p className="mt-0.5 text-xs text-slate-500">Enroll a device, then use Start on this map (or open the phone app once for permissions).</p>
           </div>
         </div>
       )}

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react
 import { format } from "date-fns";
 import {
   Database,
+  Download,
   Loader2,
   Pause,
   Play,
@@ -179,6 +180,7 @@ export default function CallerLookupPage() {
   const [selectedResultId, setSelectedResultId] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const [loadingMeta, setLoadingMeta] = useState(true);
 
   const selectedSeries = useMemo(
@@ -262,6 +264,37 @@ export default function CallerLookupPage() {
     const id = setInterval(refresh, active ? 1000 : 5000);
     return () => clearInterval(id);
   }, [job?.status, refresh]);
+
+  const exportExcel = async (foundOnly = false) => {
+    if (!job) return;
+    setExporting(true);
+    setError("");
+    try {
+      const params = new URLSearchParams({ jobId: job.id });
+      if (foundOnly) params.set("foundOnly", "1");
+      const res = await fetch(`/api/caller-lookup/job/export?${params}`);
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || "Export failed");
+      }
+      const blob = await res.blob();
+      const cd = res.headers.get("Content-Disposition") || "";
+      const match = /filename="([^"]+)"/.exec(cd);
+      const filename = match?.[1] || `caller-lookup-${job.id.slice(-8)}.xlsx`;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Export failed");
+    } finally {
+      setExporting(false);
+    }
+  };
 
   const startJob = async () => {
     setBusy(true);
@@ -654,8 +687,34 @@ export default function CallerLookupPage() {
 
       <div className="grid gap-6 xl:grid-cols-3">
         <Card className="bg-slate-900 border-slate-800 text-slate-100 xl:col-span-2">
-          <CardHeader>
+          <CardHeader className="flex flex-row items-center justify-between gap-3 space-y-0">
             <CardTitle className="text-base text-slate-200">Results</CardTitle>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                className="border-slate-700"
+                onClick={() => exportExcel(false)}
+                disabled={!job || exporting || (job.processed || 0) === 0}
+              >
+                {exporting ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Download className="h-4 w-4" />
+                )}
+                Export Excel
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                className="border-emerald-700 text-emerald-300"
+                onClick={() => exportExcel(true)}
+                disabled={!job || exporting || (job.successful || 0) === 0}
+              >
+                <Download className="h-4 w-4" />
+                Found only
+              </Button>
+            </div>
           </CardHeader>
           <CardContent>
             <div className="rounded-md border border-slate-800 overflow-hidden max-h-[420px] overflow-y-auto">

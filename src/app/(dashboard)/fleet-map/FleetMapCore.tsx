@@ -73,7 +73,9 @@ export type LocationCommand =
   | "location_latest"
   | "location_upload"
   | "location_live_mode"
-  | "location_stop_live_mode";
+  | "location_stop_live_mode"
+  | "location_start_tracking"
+  | "location_stop_tracking";
 
 interface Props {
   devices: DeviceState[];
@@ -260,30 +262,30 @@ export default function FleetMapCore({
                     {onCommand && (
                       <div className="flex flex-wrap gap-1.5 border-t border-slate-100 pt-2">
                         <CmdButton
+                          label="Start"
+                          icon={<Radio className="h-3 w-3" />}
+                          busy={isCmd(d.deviceId, "location_start_tracking")}
+                          onClick={() => onCommand(d.deviceId, "location_start_tracking")}
+                          tone="live"
+                        />
+                        <CmdButton
+                          label="End"
+                          icon={<StopCircle className="h-3 w-3" />}
+                          busy={isCmd(d.deviceId, "location_stop_tracking")}
+                          onClick={() => onCommand(d.deviceId, "location_stop_tracking")}
+                          tone="stop"
+                        />
+                        <CmdButton
                           label="Latest"
                           icon={<Navigation className="h-3 w-3" />}
                           busy={isCmd(d.deviceId, "location_latest")}
                           onClick={() => onCommand(d.deviceId, "location_latest")}
                         />
                         <CmdButton
-                          label="Route"
+                          label="Upload"
                           icon={<Satellite className="h-3 w-3" />}
                           busy={isCmd(d.deviceId, "location_upload")}
                           onClick={() => onCommand(d.deviceId, "location_upload")}
-                        />
-                        <CmdButton
-                          label="Live"
-                          icon={<Radio className="h-3 w-3" />}
-                          busy={isCmd(d.deviceId, "location_live_mode")}
-                          onClick={() => onCommand(d.deviceId, "location_live_mode")}
-                          tone="live"
-                        />
-                        <CmdButton
-                          label="Stop"
-                          icon={<StopCircle className="h-3 w-3" />}
-                          busy={isCmd(d.deviceId, "location_stop_live_mode")}
-                          onClick={() => onCommand(d.deviceId, "location_stop_live_mode")}
-                          tone="stop"
                         />
                       </div>
                     )}

@@ -21,7 +21,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "deviceId and type are required" }, { status: 400 });
     }
 
-    const validTypes = ["location_upload", "location_latest", "location_live_mode", "location_stop_live_mode"];
+    const validTypes = ["location_upload", "location_latest", "location_live_mode", "location_stop_live_mode", "location_start_tracking", "location_stop_tracking"];
     if (!validTypes.includes(type)) {
       return NextResponse.json({ error: "Invalid type" }, { status: 400 });
     }
