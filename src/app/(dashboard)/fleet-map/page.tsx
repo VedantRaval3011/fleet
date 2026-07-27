@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import dynamic from "next/dynamic";
 import { useSidebar } from "@/components/layout/SidebarContext";
+import { vehicleLabel } from "@/lib/companyIdQuery";
 import type { DeviceTrack, LocationCommand } from "./FleetMapCore";
 
 const FleetMapCore = dynamic(() => import("./FleetMapCore"), { ssr: false });
@@ -29,7 +30,7 @@ interface DeviceState {
   _id: string;
   deviceId: string;
   employeeName?: string;
-  vehicle?: string;
+  vehicle?: string | { id?: string; registration?: string };
   latestCoordinates: { lat: number; lng: number };
   latestAccuracy?: number;
   latestSpeed?: number;
@@ -123,7 +124,7 @@ export default function FleetMapPage() {
     const q = query.trim().toLowerCase();
     if (!q) return devices;
     return devices.filter((d) => {
-      const hay = `${d.employeeName || ""} ${d.vehicle || ""} ${d.deviceId}`.toLowerCase();
+      const hay = `${d.employeeName || ""} ${vehicleLabel(d.vehicle) || ""} ${d.deviceId}`.toLowerCase();
       return hay.includes(q);
     });
   }, [devices, query]);
@@ -135,6 +136,7 @@ export default function FleetMapPage() {
   );
 
   const selected = devices.find((d) => d.deviceId === selectedDeviceId) || null;
+  const selectedPlate = vehicleLabel(selected?.vehicle);
 
   const focusDevice = (deviceId: string) => {
     const d = devices.find((x) => x.deviceId === deviceId);
@@ -234,6 +236,7 @@ export default function FleetMapPage() {
                 filteredDevices.map((d) => {
                   const meta = freshnessMeta[d.freshness];
                   const active = selectedDeviceId === d.deviceId;
+                  const plate = vehicleLabel(d.vehicle);
                   return (
                     <button
                       key={d.deviceId}
@@ -249,7 +252,7 @@ export default function FleetMapPage() {
                           {d.employeeName || d.deviceId}
                         </span>
                         <span className="mt-0.5 block truncate text-xs text-slate-500">
-                          {d.vehicle ? `${d.vehicle} · ` : ""}
+                          {plate ? `${plate} · ` : ""}
                           {d.latestCoordinates?.lat
                             ? `${d.latestCoordinates.lat.toFixed(4)}, ${d.latestCoordinates.lng.toFixed(4)}`
                             : "No location"}
@@ -274,8 +277,8 @@ export default function FleetMapPage() {
                 <p className="truncate text-[15px] font-semibold text-slate-900">
                   {selected.employeeName || selected.deviceId}
                 </p>
-                {selected.vehicle && (
-                  <p className="truncate font-mono text-xs text-slate-500">{selected.vehicle}</p>
+                {selectedPlate && (
+                  <p className="truncate font-mono text-xs text-slate-500">{selectedPlate}</p>
                 )}
               </div>
               <div className="flex items-center gap-1">

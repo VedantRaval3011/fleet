@@ -15,6 +15,7 @@ import "leaflet/dist/leaflet.css";
 import L from "leaflet";
 import { useEffect, type ReactNode } from "react";
 import { Loader2, Navigation, Radio, Satellite, StopCircle } from "lucide-react";
+import { vehicleLabel } from "@/lib/companyIdQuery";
 
 const DefaultIcon = L.icon({
   iconUrl: "https://unpkg.com/leaflet@1.7.1/dist/images/marker-icon.png",
@@ -54,7 +55,7 @@ const TRACK_COLOR: Record<string, string> = {
 interface DeviceState {
   deviceId: string;
   employeeName?: string;
-  vehicle?: string;
+  vehicle?: string | { id?: string; registration?: string };
   latestCoordinates: { lat: number; lng: number };
   latestAccuracy?: number;
   latestSpeed?: number;
@@ -191,6 +192,7 @@ export default function FleetMapCore({
             .map((p) => [p.lat, p.lng]);
           const color = TRACK_COLOR[d.freshness];
           const selected = selectedDeviceId === d.deviceId;
+          const plate = vehicleLabel(d.vehicle);
 
           return (
             <span key={d.deviceId}>
@@ -245,7 +247,7 @@ export default function FleetMapCore({
                   <div className="min-w-[210px] space-y-2 font-sans text-sm">
                     <div>
                       <p className="font-bold text-slate-900">{d.employeeName || d.deviceId}</p>
-                      {d.vehicle && <p className="font-mono text-xs text-slate-600">{d.vehicle}</p>}
+                      {plate && <p className="font-mono text-xs text-slate-600">{plate}</p>}
                     </div>
                     <div className="space-y-0.5 text-xs text-slate-600">
                       {d.latestSpeed != null && (

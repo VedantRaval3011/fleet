@@ -35,7 +35,8 @@ export async function GET() {
       }
       return {
         ...s,
-        vehicle: vehicleLabel(s.vehicle) || s.vehicle,
+        // Always a string (or undefined) — never the raw { id, registration } object.
+        vehicle: vehicleLabel(s.vehicle),
         ageMinutes,
         freshness,
       };

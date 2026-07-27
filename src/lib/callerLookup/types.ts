@@ -37,7 +37,7 @@ export interface NumberSeries {
   provider: string;
   prefix: string;
   label: string;
-  /** How many subscriber numbers this MSC/prefix covers (usually 100_000) */
+  /** How many subscriber numbers this prefix covers (1_000_000 for 4-digit series) */
   capacity: number;
   circle?: string;
 }
