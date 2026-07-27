@@ -26,12 +26,17 @@ export async function GET() {
 
     const now = Date.now();
     const enriched = states.map((s: any) => {
-      const lastMs = s.lastReceivedAt ? new Date(s.lastReceivedAt).getTime() : null;
-      const ageMinutes = lastMs ? (now - lastMs) / 60000 : null;
+      // Prefer GPS fix time over upload/heartbeat time so "Live" means the pin moved recently.
+      const fixMs = s.lastRecordedAt
+        ? new Date(s.lastRecordedAt).getTime()
+        : s.lastReceivedAt
+          ? new Date(s.lastReceivedAt).getTime()
+          : null;
+      const ageMinutes = fixMs != null ? (now - fixMs) / 60000 : null;
       let freshness: "fresh" | "stale" | "old" | "unavailable" = "unavailable";
       if (ageMinutes !== null) {
-        if (ageMinutes < 1) freshness = "fresh";
-        else if (ageMinutes < 5) freshness = "stale";
+        if (ageMinutes < 3) freshness = "fresh";
+        else if (ageMinutes < 15) freshness = "stale";
         else freshness = "old";
       }
       return {
@@ -43,10 +48,18 @@ export async function GET() {
       };
     });
 
-    // Newest activity first so newly-seen devices surface at the top of pickers.
+    // Newest GPS fix first so active devices surface at the top of pickers.
     enriched.sort((a: any, b: any) => {
-      const am = a.lastReceivedAt ? new Date(a.lastReceivedAt).getTime() : 0;
-      const bm = b.lastReceivedAt ? new Date(b.lastReceivedAt).getTime() : 0;
+      const am = a.lastRecordedAt
+        ? new Date(a.lastRecordedAt).getTime()
+        : a.lastReceivedAt
+          ? new Date(a.lastReceivedAt).getTime()
+          : 0;
+      const bm = b.lastRecordedAt
+        ? new Date(b.lastRecordedAt).getTime()
+        : b.lastReceivedAt
+          ? new Date(b.lastReceivedAt).getTime()
+          : 0;
       return bm - am;
     });
 

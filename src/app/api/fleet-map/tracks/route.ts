@@ -4,13 +4,14 @@ import { authOptions } from "@/lib/auth";
 import connectToDatabase from "@/lib/db";
 import LocationPoint from "@/models/LocationPoint";
 import { companyIdIn } from "@/lib/companyIdQuery";
+import { filterGpsTrack, type RawTrackPoint } from "@/lib/gpsTrackFilter";
 
 export const dynamic = "force-dynamic";
 
 // Returns the recent movement trail for every device in the company so the
 // live fleet map can draw a route polyline (not just the latest pin).
 // Query params:
-//   minutes   — look-back window in minutes (default 120, max 1440)
+//   minutes   — look-back window in minutes (default 30, max 1440)
 //   deviceId  — optional, restrict to a single device
 export async function GET(req: Request) {
   try {
@@ -21,7 +22,7 @@ export async function GET(req: Request) {
 
     const { searchParams } = new URL(req.url);
     const minutes = Math.min(
-      Math.max(parseInt(searchParams.get("minutes") || "120", 10) || 120, 1),
+      Math.max(parseInt(searchParams.get("minutes") || "30", 10) || 30, 1),
       1440
     );
     const deviceId = searchParams.get("deviceId");
@@ -36,30 +37,43 @@ export async function GET(req: Request) {
     if (deviceId) query.deviceId = deviceId;
 
     const points = await LocationPoint.find(query)
-      .select("deviceId latitude longitude recordedAt speedMetersPerSecond sequenceNumber")
-      .sort({ deviceId: 1, recordedAt: 1 })
-      .limit(20000)
+      .select(
+        "deviceId latitude longitude recordedAt speedMetersPerSecond accuracyMeters isMockLocation sequenceNumber"
+      )
+      .sort({ deviceId: 1, recordedAt: 1, sequenceNumber: 1 })
+      .limit(30000)
       .lean();
 
-    const byDevice: Record<
-      string,
-      { deviceId: string; points: { lat: number; lng: number; recordedAt: Date; speed?: number }[] }
-    > = {};
+    const rawByDevice: Record<string, RawTrackPoint[]> = {};
 
     for (const p of points as any[]) {
       if (p.latitude == null || p.longitude == null) continue;
-      const t = (byDevice[p.deviceId] ??= { deviceId: p.deviceId, points: [] });
-      t.points.push({
+      (rawByDevice[p.deviceId] ??= []).push({
         lat: p.latitude,
         lng: p.longitude,
         recordedAt: p.recordedAt,
         speed: p.speedMetersPerSecond,
+        accuracyMeters: p.accuracyMeters,
+        isMockLocation: p.isMockLocation,
       });
     }
 
+    const tracks = Object.entries(rawByDevice).map(([id, raw]) => {
+      const filtered = filterGpsTrack(raw);
+      return {
+        deviceId: id,
+        points: filtered.map((p) => ({
+          lat: p.lat,
+          lng: p.lng,
+          recordedAt: p.recordedAt,
+          speed: p.speed,
+        })),
+      };
+    });
+
     return NextResponse.json({
       windowMinutes: minutes,
-      tracks: Object.values(byDevice),
+      tracks,
     });
   } catch (error) {
     console.error("GET /api/fleet-map/tracks error:", error);

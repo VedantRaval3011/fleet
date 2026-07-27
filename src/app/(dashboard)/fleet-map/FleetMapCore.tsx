@@ -89,8 +89,16 @@ interface Props {
   focusPoint?: { lat: number; lng: number } | null;
 }
 
-function FitBounds({ points, enabled }: { points: [number, number][]; enabled: boolean }) {
+function FitBounds({
+  points,
+  enabled,
+}: {
+  points: [number, number][];
+  enabled: boolean;
+}) {
   const map = useMap();
+  // Stabilize deps so 5s polling doesn't constantly re-fit on a new array identity.
+  const key = points.map((p) => `${p[0].toFixed(5)},${p[1].toFixed(5)}`).join("|");
   useEffect(() => {
     if (!enabled || points.length === 0) return;
     if (points.length === 1) {
@@ -98,9 +106,13 @@ function FitBounds({ points, enabled }: { points: [number, number][]; enabled: b
       return;
     }
     map.fitBounds(L.latLngBounds(points), { padding: [72, 72], maxZoom: 16 });
-  }, [enabled, map, points]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed by serialized positions
+  }, [enabled, map, key]);
   return null;
 }
+
+const ACCURACY_CIRCLE_MAX_M = 80;
+const ACCURACY_CIRCLE_HIDE_ABOVE_M = 150;
 
 function FocusOn({ point }: { point: { lat: number; lng: number } | null | undefined }) {
   const map = useMap();
@@ -162,9 +174,15 @@ export default function FleetMapCore({
       ? [devices[0].latestCoordinates.lat, devices[0].latestCoordinates.lng]
       : [20.5937, 78.9629];
 
-  const allPoints: [number, number][] = [];
-  devices.forEach((d) => allPoints.push([d.latestCoordinates.lat, d.latestCoordinates.lng]));
-  tracks.forEach((t) => t.points.forEach((p) => allPoints.push([p.lat, p.lng])));
+  // Fit to device pins only — including raw trails zooms out around GPS outliers.
+  const pinPoints: [number, number][] = devices
+    .filter((d) => d.latestCoordinates?.lat != null && d.latestCoordinates?.lng != null)
+    .map((d) => {
+      const trail = trackByDevice.get(d.deviceId) || [];
+      const tip = trail.length > 0 ? trail[trail.length - 1] : null;
+      if (tip) return [tip.lat, tip.lng] as [number, number];
+      return [d.latestCoordinates.lat, d.latestCoordinates.lng] as [number, number];
+    });
 
   const isCmd = (deviceId: string, type: string) => !!commandStates[`${deviceId}:${type}`];
 
@@ -182,7 +200,7 @@ export default function FleetMapCore({
           url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
         />
         <ZoomControl position="bottomright" />
-        <FitBounds points={allPoints} enabled={autoFit && !focusPoint} />
+        <FitBounds points={pinPoints} enabled={autoFit && !focusPoint} />
         <FocusOn point={focusPoint} />
 
         {devices.map((d) => {
@@ -190,9 +208,19 @@ export default function FleetMapCore({
           const latlngs: [number, number][] = trail
             .filter((p) => p.lat != null && p.lng != null)
             .map((p) => [p.lat, p.lng]);
+          const tip = latlngs.length > 0 ? latlngs[latlngs.length - 1] : null;
+          const markerPos: [number, number] = tip
+            ? tip
+            : [d.latestCoordinates.lat, d.latestCoordinates.lng];
           const color = TRACK_COLOR[d.freshness];
           const selected = selectedDeviceId === d.deviceId;
           const plate = vehicleLabel(d.vehicle);
+          const accuracyM =
+            d.latestAccuracy != null &&
+            d.latestAccuracy > 0 &&
+            d.latestAccuracy <= ACCURACY_CIRCLE_HIDE_ABOVE_M
+              ? Math.min(d.latestAccuracy, ACCURACY_CIRCLE_MAX_M)
+              : null;
 
           return (
             <span key={d.deviceId}>
@@ -223,10 +251,10 @@ export default function FleetMapCore({
                 </>
               )}
 
-              {d.latestAccuracy != null && d.latestAccuracy > 0 && (
+              {accuracyM != null && (
                 <Circle
-                  center={[d.latestCoordinates.lat, d.latestCoordinates.lng]}
-                  radius={d.latestAccuracy}
+                  center={markerPos}
+                  radius={accuracyM}
                   pathOptions={{
                     color,
                     fillOpacity: 0.08,
@@ -237,7 +265,7 @@ export default function FleetMapCore({
               )}
 
               <Marker
-                position={[d.latestCoordinates.lat, d.latestCoordinates.lng]}
+                position={markerPos}
                 icon={makeIcon(color, selected)}
                 eventHandlers={{
                   click: () => onSelectDevice?.(d.deviceId),

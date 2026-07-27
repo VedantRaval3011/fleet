@@ -23,7 +23,7 @@ import type { DeviceTrack, LocationCommand } from "./FleetMapCore";
 
 const FleetMapCore = dynamic(() => import("./FleetMapCore"), { ssr: false });
 
-const TRACK_WINDOW_MINUTES = 120;
+const TRACK_WINDOW_MINUTES = 30;
 const REFRESH_MS = 5000;
 
 interface DeviceState {
@@ -35,6 +35,7 @@ interface DeviceState {
   latestAccuracy?: number;
   latestSpeed?: number;
   lastReceivedAt?: string;
+  lastRecordedAt?: string;
   trackingStatus?: string;
   batteryPercent?: number;
   freshness: "fresh" | "stale" | "old" | "unavailable";
@@ -43,8 +44,8 @@ interface DeviceState {
 
 const freshnessMeta = {
   fresh: { label: "Live", chip: "bg-emerald-500 text-white", dot: "bg-emerald-400" },
-  stale: { label: "1–5m", chip: "bg-amber-500 text-white", dot: "bg-amber-400" },
-  old: { label: "> 5m", chip: "bg-rose-500 text-white", dot: "bg-rose-400" },
+  stale: { label: "3–15m", chip: "bg-amber-500 text-white", dot: "bg-amber-400" },
+  old: { label: "> 15m", chip: "bg-rose-500 text-white", dot: "bg-rose-400" },
   unavailable: { label: "N/A", chip: "bg-slate-500 text-white", dot: "bg-slate-400" },
 } as const;
 
@@ -145,7 +146,11 @@ export default function FleetMapPage() {
     setSearchOpen(false);
     setListOpen(false);
     setQuery(d?.employeeName || d?.deviceId || "");
-    if (d?.latestCoordinates?.lat && d?.latestCoordinates?.lng) {
+    const trail = tracks.find((t) => t.deviceId === deviceId)?.points;
+    const tip = trail && trail.length > 0 ? trail[trail.length - 1] : null;
+    if (tip) {
+      setFocusPoint({ lat: tip.lat, lng: tip.lng });
+    } else if (d?.latestCoordinates?.lat && d?.latestCoordinates?.lng) {
       setFocusPoint({ lat: d.latestCoordinates.lat, lng: d.latestCoordinates.lng });
     }
   };
