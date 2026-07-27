@@ -5,14 +5,17 @@ import connectToDatabase from "@/lib/db";
 import LocationPoint from "@/models/LocationPoint";
 import { companyIdIn } from "@/lib/companyIdQuery";
 import { filterGpsTrack, type RawTrackPoint } from "@/lib/gpsTrackFilter";
+import { snapTracksToRoads } from "@/lib/osrmMapMatch";
 
 export const dynamic = "force-dynamic";
+export const maxDuration = 60;
 
 // Returns the recent movement trail for every device in the company so the
 // live fleet map can draw a route polyline (not just the latest pin).
 // Query params:
 //   minutes   — look-back window in minutes (default 30, max 1440)
 //   deviceId  — optional, restrict to a single device
+//   snap      — "0" to skip road matching (default on)
 export async function GET(req: Request) {
   try {
     const session = await getServerSession(authOptions);
@@ -26,6 +29,8 @@ export async function GET(req: Request) {
       1440
     );
     const deviceId = searchParams.get("deviceId");
+    const snap =
+      searchParams.get("snap") !== "0" && process.env.FLEET_MAP_SNAP !== "0";
     const cutoff = new Date(Date.now() - minutes * 60_000);
 
     await connectToDatabase();
@@ -58,21 +63,36 @@ export async function GET(req: Request) {
       });
     }
 
-    const tracks = Object.entries(rawByDevice).map(([id, raw]) => {
-      const filtered = filterGpsTrack(raw);
+    const filteredTracks = Object.entries(rawByDevice).map(([id, raw]) => ({
+      deviceId: id,
+      points: filterGpsTrack(raw),
+    }));
+
+    const snapped = snap
+      ? await snapTracksToRoads(filteredTracks)
+      : new Map<string, { lat: number; lng: number }[]>();
+
+    const tracks = filteredTracks.map((t) => {
+      const route = snapped.get(t.deviceId);
+      const gpsPoints = t.points.map((p) => ({
+        lat: p.lat,
+        lng: p.lng,
+        recordedAt: p.recordedAt,
+        speed: p.speed,
+      }));
       return {
-        deviceId: id,
-        points: filtered.map((p) => ({
-          lat: p.lat,
-          lng: p.lng,
-          recordedAt: p.recordedAt,
-          speed: p.speed,
-        })),
+        deviceId: t.deviceId,
+        // GPS fixes (marker tip / trail start time)
+        points: gpsPoints,
+        // Road-snapped geometry for the polyline (falls back to GPS)
+        route: route && route.length >= 2 ? route : gpsPoints.map((p) => ({ lat: p.lat, lng: p.lng })),
+        snapped: !!(route && route.length >= 2),
       };
     });
 
     return NextResponse.json({
       windowMinutes: minutes,
+      snapped: snap,
       tracks,
     });
   } catch (error) {

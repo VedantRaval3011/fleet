@@ -98,15 +98,14 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Invalid number series" }, { status: 400 });
     }
 
-    const deviceQuery: Record<string, unknown> = { deviceId };
-    if (session.user.role !== "super_admin") {
-      deviceQuery.companyId = companyIdIn(session.user.companyId!);
+    const deviceQuery: Record<string, unknown> = { deviceId, revoked: { $ne: true } };
+    if (session.user.role !== "super_admin" && session.user.companyId) {
+      deviceQuery.companyId = companyIdIn(session.user.companyId);
     }
-    deviceQuery.revoked = { $ne: true };
     const device = await DeviceEnrollment.findOne(deviceQuery).lean();
     if (!device) {
       return NextResponse.json(
-        { error: "Selected enrolled Android device was not found for this company" },
+        { error: `Enrolled device "${deviceId}" not found (check enrollment is active and not revoked)` },
         { status: 404 }
       );
     }
@@ -148,10 +147,16 @@ export async function POST(req: Request) {
     });
     const data = (await response.json().catch(() => ({}))) as Record<string, unknown>;
     if (!response.ok) {
-      return NextResponse.json(
-        { error: String(data.error || "Backend rejected the Android lookup job") },
-        { status: response.status }
-      );
+      const backendError = String(data.error || "").trim();
+      const message =
+        response.status === 401 || response.status === 403
+          ? backendError ||
+            "Backend rejected credentials — check BACKEND_API_KEY matches the Express API_KEY"
+          : response.status === 404
+            ? backendError ||
+              "Backend has no caller-lookup job API — redeploy Express with callerLookupRoutes"
+            : backendError || `Backend rejected the Android lookup job (${response.status})`;
+      return NextResponse.json({ error: message }, { status: response.status });
     }
     const job = data.job as Record<string, unknown>;
     return NextResponse.json(
@@ -160,8 +165,15 @@ export async function POST(req: Request) {
     );
   } catch (err) {
     console.error("[caller-lookup/job POST]", err);
+    const message = err instanceof Error ? err.message : "Failed to start job";
+    const isNetwork =
+      /fetch failed|ECONNREFUSED|ENOTFOUND|network|timeout/i.test(message);
     return NextResponse.json(
-      { error: err instanceof Error ? err.message : "Failed to start job" },
+      {
+        error: isNetwork
+          ? `Network error reaching backend (${process.env.BACKEND_URL || "BACKEND_URL unset"}): ${message}`
+          : message,
+      },
       { status: 400 }
     );
   }

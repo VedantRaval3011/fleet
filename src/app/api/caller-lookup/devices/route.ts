@@ -17,8 +17,8 @@ export async function GET() {
 
   await connectToDatabase();
   const query: Record<string, unknown> = { revoked: { $ne: true } };
-  if (session.user.role !== "super_admin") {
-    query.companyId = companyIdIn(session.user.companyId!);
+  if (session.user.role !== "super_admin" && session.user.companyId) {
+    query.companyId = companyIdIn(session.user.companyId);
   }
   const devices = await DeviceEnrollment.find(query)
     .sort({ updatedAt: -1 })

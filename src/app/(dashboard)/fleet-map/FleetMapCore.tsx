@@ -67,7 +67,11 @@ interface DeviceState {
 
 export interface DeviceTrack {
   deviceId: string;
+  /** Filtered GPS fixes — used for marker tip / trail start. */
   points: { lat: number; lng: number; recordedAt?: string; speed?: number }[];
+  /** Road-snapped path for the polyline (may equal points if snap failed). */
+  route?: { lat: number; lng: number }[];
+  snapped?: boolean;
 }
 
 export type LocationCommand =
@@ -168,7 +172,7 @@ export default function FleetMapCore({
   commandStates = {},
   focusPoint = null,
 }: Props) {
-  const trackByDevice = new Map(tracks.map((t) => [t.deviceId, t.points]));
+  const trackByDevice = new Map(tracks.map((t) => [t.deviceId, t]));
   const center: [number, number] =
     devices.length > 0
       ? [devices[0].latestCoordinates.lat, devices[0].latestCoordinates.lng]
@@ -178,8 +182,9 @@ export default function FleetMapCore({
   const pinPoints: [number, number][] = devices
     .filter((d) => d.latestCoordinates?.lat != null && d.latestCoordinates?.lng != null)
     .map((d) => {
-      const trail = trackByDevice.get(d.deviceId) || [];
-      const tip = trail.length > 0 ? trail[trail.length - 1] : null;
+      const track = trackByDevice.get(d.deviceId);
+      const tipPts = track?.points || [];
+      const tip = tipPts.length > 0 ? tipPts[tipPts.length - 1] : null;
       if (tip) return [tip.lat, tip.lng] as [number, number];
       return [d.latestCoordinates.lat, d.latestCoordinates.lng] as [number, number];
     });
@@ -204,13 +209,15 @@ export default function FleetMapCore({
         <FocusOn point={focusPoint} />
 
         {devices.map((d) => {
-          const trail = trackByDevice.get(d.deviceId) || [];
-          const latlngs: [number, number][] = trail
-            .filter((p) => p.lat != null && p.lng != null)
-            .map((p) => [p.lat, p.lng]);
-          const tip = latlngs.length > 0 ? latlngs[latlngs.length - 1] : null;
-          const markerPos: [number, number] = tip
-            ? tip
+          const track = trackByDevice.get(d.deviceId);
+          const gps = track?.points || [];
+          const path = (track?.route && track.route.length >= 2 ? track.route : gps).filter(
+            (p) => p.lat != null && p.lng != null
+          );
+          const latlngs: [number, number][] = path.map((p) => [p.lat, p.lng]);
+          const tipGps = gps.length > 0 ? gps[gps.length - 1] : null;
+          const markerPos: [number, number] = tipGps
+            ? [tipGps.lat, tipGps.lng]
             : [d.latestCoordinates.lat, d.latestCoordinates.lng];
           const color = TRACK_COLOR[d.freshness];
           const selected = selectedDeviceId === d.deviceId;
@@ -241,9 +248,9 @@ export default function FleetMapCore({
                   >
                     <Popup>
                       <p className="text-xs font-semibold text-slate-700">Trail start</p>
-                      {trail[0].recordedAt && (
+                      {gps[0]?.recordedAt && (
                         <p className="text-xs text-slate-500">
-                          {new Date(trail[0].recordedAt).toLocaleTimeString()}
+                          {new Date(gps[0].recordedAt).toLocaleTimeString()}
                         </p>
                       )}
                     </Popup>
@@ -281,7 +288,12 @@ export default function FleetMapCore({
                       {d.latestSpeed != null && (
                         <p>{(d.latestSpeed * 3.6).toFixed(1)} km/h</p>
                       )}
-                      {latlngs.length > 1 && <p>{latlngs.length} points in trail</p>}
+                      {latlngs.length > 1 && (
+                        <p>
+                          {gps.length} GPS · {latlngs.length} route pts
+                          {track?.snapped ? " · road-matched" : ""}
+                        </p>
+                      )}
                       {d.batteryPercent != null && <p>Battery: {d.batteryPercent}%</p>}
                       {d.lastReceivedAt && d.ageMinutes != null && (
                         <p className="text-slate-400">
