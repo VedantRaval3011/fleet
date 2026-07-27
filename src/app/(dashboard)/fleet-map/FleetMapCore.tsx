@@ -15,7 +15,7 @@ import "leaflet/dist/leaflet.css";
 import L from "leaflet";
 import { useEffect, type ReactNode } from "react";
 import { Loader2, Navigation, Radio, Satellite, StopCircle } from "lucide-react";
-import { vehicleLabel } from "@/lib/companyIdQuery";
+import { vehicleLabel } from "@/lib/vehicleLabel";
 
 const DefaultIcon = L.icon({
   iconUrl: "https://unpkg.com/leaflet@1.7.1/dist/images/marker-icon.png",

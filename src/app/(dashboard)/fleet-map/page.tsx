@@ -18,7 +18,7 @@ import {
 } from "lucide-react";
 import dynamic from "next/dynamic";
 import { useSidebar } from "@/components/layout/SidebarContext";
-import { vehicleLabel } from "@/lib/companyIdQuery";
+import { vehicleLabel } from "@/lib/vehicleLabel";
 import type { DeviceTrack, LocationCommand } from "./FleetMapCore";
 
 const FleetMapCore = dynamic(() => import("./FleetMapCore"), { ssr: false });

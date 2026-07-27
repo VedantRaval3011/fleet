@@ -3,7 +3,8 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import connectToDatabase from "@/lib/db";
 import DeviceLocationState from "@/models/DeviceLocationState";
-import { companyIdIn, vehicleLabel } from "@/lib/companyIdQuery";
+import { companyIdIn } from "@/lib/companyIdQuery";
+import { vehicleLabel } from "@/lib/vehicleLabel";
 
 export const dynamic = "force-dynamic";
 
