@@ -27,14 +27,16 @@ export function haversineMeters(
 }
 
 export interface TrackFilterOptions {
-  /** Drop fixes worse than this (meters). Default 80. */
+  /** Drop fixes worse than this (meters). Default 50 — above this a fix is wifi/cell derived. */
   maxAccuracyM?: number;
   /** Reject segment if implied speed exceeds this (m/s). Default 45 (~162 km/h). */
   maxSpeedMps?: number;
   /** Collapse points closer than this (meters). Default 12. */
   minMoveM?: number;
-  /** Also require at least this many ms between kept points when nearly stationary. Default 8s. */
-  minIntervalMs?: number;
+  /** While stationary, keep at most one point per this many ms. Default 5min. */
+  stationaryHoldMs?: number;
+  /** Out-and-back excursion longer than this is a spike, not travel (meters). Default 60. */
+  spikeExcursionM?: number;
   /** Soft cap of points kept per device after filtering. Default 1500. */
   maxPoints?: number;
 }
@@ -43,17 +45,18 @@ export interface TrackFilterOptions {
  * Clean a chronologically sorted GPS trail:
  * drop mock / low-accuracy fixes, reject teleport jumps, collapse near-duplicates.
  */
-export function filterGpsTrack(
-  points: RawTrackPoint[],
+export function filterGpsTrack<T extends RawTrackPoint>(
+  points: T[],
   opts: TrackFilterOptions = {}
-): RawTrackPoint[] {
-  const maxAccuracyM = opts.maxAccuracyM ?? 80;
+): T[] {
+  const maxAccuracyM = opts.maxAccuracyM ?? 50;
   const maxSpeedMps = opts.maxSpeedMps ?? 45;
   const minMoveM = opts.minMoveM ?? 12;
-  const minIntervalMs = opts.minIntervalMs ?? 8_000;
+  const stationaryHoldMs = opts.stationaryHoldMs ?? 5 * 60_000;
+  const spikeExcursionM = opts.spikeExcursionM ?? 60;
   const maxPoints = opts.maxPoints ?? 1500;
 
-  const cleaned: RawTrackPoint[] = [];
+  const cleaned: T[] = [];
 
   for (const p of points) {
     if (p.lat == null || p.lng == null) continue;
@@ -82,20 +85,59 @@ export function filterGpsTrack(
       continue;
     }
 
-    // Collapse stationary / near-duplicate noise.
-    if (dist < minMoveM && dtMs < minIntervalMs) continue;
+    // Collapse stationary / near-duplicate noise. A parked vehicle reports every
+    // 20s, so gating on the interval alone let the whole standstill through —
+    // only a real move, or a long-stop keepalive, produces a new point.
+    if (dist < minMoveM && dtMs < stationaryHoldMs) continue;
 
     cleaned.push(p);
   }
 
-  if (cleaned.length <= maxPoints) return cleaned;
+  const deSpiked = removeSpikes(cleaned, spikeExcursionM, minMoveM);
+
+  if (deSpiked.length <= maxPoints) return deSpiked;
 
   // Uniform downsample while keeping first and last.
-  const out: RawTrackPoint[] = [cleaned[0]];
-  const step = (cleaned.length - 1) / (maxPoints - 1);
+  const out: T[] = [deSpiked[0]];
+  const step = (deSpiked.length - 1) / (maxPoints - 1);
   for (let i = 1; i < maxPoints - 1; i++) {
-    out.push(cleaned[Math.round(i * step)]);
+    out.push(deSpiked[Math.round(i * step)]);
   }
-  out.push(cleaned[cleaned.length - 1]);
+  out.push(deSpiked[deSpiked.length - 1]);
+  return out;
+}
+
+/**
+ * Drop out-and-back excursions — the "spider web" legs on the fleet map.
+ *
+ * A bad fix moves hundreds of metres away and the next good fix comes straight
+ * back, so the neighbours of the outlier are close to each other. The implied
+ * speed can stay under the teleport threshold (500m over a 20s parked sample is
+ * only 25 m/s), which is why this needs its own geometric test.
+ */
+function removeSpikes<T extends RawTrackPoint>(
+  points: T[],
+  excursionM: number,
+  minMoveM: number
+): T[] {
+  if (points.length < 3) return points;
+
+  const out: T[] = [points[0]];
+  for (let i = 1; i < points.length - 1; i++) {
+    const prev = out[out.length - 1];
+    const cur = points[i];
+    const next = points[i + 1];
+
+    const outbound = haversineMeters(prev.lat, prev.lng, cur.lat, cur.lng);
+    const back = haversineMeters(cur.lat, cur.lng, next.lat, next.lng);
+    const through = haversineMeters(prev.lat, prev.lng, next.lat, next.lng);
+
+    // Went far and returned to where it started: not a path, an error.
+    if (outbound > excursionM && back > excursionM && through < minMoveM * 2) {
+      continue;
+    }
+    out.push(cur);
+  }
+  out.push(points[points.length - 1]);
   return out;
 }
