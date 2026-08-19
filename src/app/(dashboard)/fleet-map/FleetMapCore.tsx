@@ -1,49 +1,11 @@
 "use client";
 
-import {
-  MapContainer,
-  TileLayer,
-  Marker,
-  Popup,
-  Circle,
-  Polyline,
-  CircleMarker,
-  ZoomControl,
-  useMap,
-} from "react-leaflet";
-import "leaflet/dist/leaflet.css";
-import L from "leaflet";
-import { useEffect, type ReactNode } from "react";
-import { Loader2, Navigation, Radio, Satellite, StopCircle } from "lucide-react";
+import { AdvancedMarker, InfoWindow } from "@vis.gl/react-google-maps";
+import { useState, type ReactNode } from "react";
+import { Loader2, Navigation, Radio, Satellite, StopCircle, Zap, ZapOff } from "lucide-react";
 import { vehicleLabel } from "@/lib/vehicleLabel";
-
-const DefaultIcon = L.icon({
-  iconUrl: "https://unpkg.com/leaflet@1.7.1/dist/images/marker-icon.png",
-  iconRetinaUrl: "https://unpkg.com/leaflet@1.7.1/dist/images/marker-icon-2x.png",
-  shadowUrl: "https://unpkg.com/leaflet@1.7.1/dist/images/marker-shadow.png",
-  iconSize: [25, 41],
-  iconAnchor: [12, 41],
-  popupAnchor: [1, -34],
-  shadowSize: [41, 41],
-});
-L.Marker.prototype.options.icon = DefaultIcon;
-
-function makeIcon(color: string, selected = false) {
-  const size = selected ? 30 : 24;
-  const height = selected ? 40 : 32;
-  const r = selected ? 12 : 10;
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${height}" viewBox="0 0 ${size} ${height}">
-    <circle cx="${size / 2}" cy="${size / 2}" r="${r}" fill="${color}" stroke="white" stroke-width="${selected ? 3 : 2}"/>
-    <line x1="${size / 2}" y1="${size / 2 + r}" x2="${size / 2}" y2="${height}" stroke="${color}" stroke-width="2"/>
-  </svg>`;
-  return L.divIcon({
-    html: svg,
-    className: "",
-    iconSize: [size, height],
-    iconAnchor: [size / 2, height],
-    popupAnchor: [0, -height + 8],
-  });
-}
+import MapShell from "@/components/maps/MapShell";
+import { Circle, FitBounds, PanTo, Polyline, type LatLng } from "@/components/maps/overlays";
 
 const TRACK_COLOR: Record<string, string> = {
   fresh: "#10b981",
@@ -93,38 +55,34 @@ interface Props {
   focusPoint?: { lat: number; lng: number } | null;
 }
 
-function FitBounds({
-  points,
-  enabled,
-}: {
-  points: [number, number][];
-  enabled: boolean;
-}) {
-  const map = useMap();
-  // Stabilize deps so 5s polling doesn't constantly re-fit on a new array identity.
-  const key = points.map((p) => `${p[0].toFixed(5)},${p[1].toFixed(5)}`).join("|");
-  useEffect(() => {
-    if (!enabled || points.length === 0) return;
-    if (points.length === 1) {
-      map.setView(points[0], Math.max(map.getZoom(), 15));
-      return;
-    }
-    map.fitBounds(L.latLngBounds(points), { padding: [72, 72], maxZoom: 16 });
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed by serialized positions
-  }, [enabled, map, key]);
-  return null;
-}
-
 const ACCURACY_CIRCLE_MAX_M = 80;
 const ACCURACY_CIRCLE_HIDE_ABOVE_M = 150;
 
-function FocusOn({ point }: { point: { lat: number; lng: number } | null | undefined }) {
-  const map = useMap();
-  useEffect(() => {
-    if (!point) return;
-    map.flyTo([point.lat, point.lng], Math.max(map.getZoom(), 15), { duration: 0.6 });
-  }, [map, point?.lat, point?.lng]);
-  return null;
+/** Teardrop pin matching the old Leaflet divIcon, as marker DOM content. */
+function PinGlyph({ color, selected }: { color: string; selected: boolean }) {
+  const size = selected ? 30 : 24;
+  const height = selected ? 40 : 32;
+  const r = selected ? 12 : 10;
+  return (
+    <svg width={size} height={height} viewBox={`0 0 ${size} ${height}`}>
+      <circle
+        cx={size / 2}
+        cy={size / 2}
+        r={r}
+        fill={color}
+        stroke="white"
+        strokeWidth={selected ? 3 : 2}
+      />
+      <line
+        x1={size / 2}
+        y1={size / 2 + r}
+        x2={size / 2}
+        y2={height}
+        stroke={color}
+        strokeWidth={2}
+      />
+    </svg>
+  );
 }
 
 function CmdButton({
@@ -172,172 +130,190 @@ export default function FleetMapCore({
   commandStates = {},
   focusPoint = null,
 }: Props) {
+  // Which marker / trail-start has its InfoWindow open. Google Maps has no
+  // child-popup concept, so the open one is tracked here.
+  const [openInfo, setOpenInfo] = useState<string | null>(null);
+
   const trackByDevice = new Map(tracks.map((t) => [t.deviceId, t]));
-  const center: [number, number] =
+  const center: LatLng =
     devices.length > 0
-      ? [devices[0].latestCoordinates.lat, devices[0].latestCoordinates.lng]
-      : [20.5937, 78.9629];
+      ? { lat: devices[0].latestCoordinates.lat, lng: devices[0].latestCoordinates.lng }
+      : { lat: 20.5937, lng: 78.9629 };
 
   // Fit to device pins only — including raw trails zooms out around GPS outliers.
-  const pinPoints: [number, number][] = devices
+  const pinPoints: LatLng[] = devices
     .filter((d) => d.latestCoordinates?.lat != null && d.latestCoordinates?.lng != null)
     .map((d) => {
-      const track = trackByDevice.get(d.deviceId);
-      const tipPts = track?.points || [];
+      const tipPts = trackByDevice.get(d.deviceId)?.points || [];
       const tip = tipPts.length > 0 ? tipPts[tipPts.length - 1] : null;
-      if (tip) return [tip.lat, tip.lng] as [number, number];
-      return [d.latestCoordinates.lat, d.latestCoordinates.lng] as [number, number];
+      return tip
+        ? { lat: tip.lat, lng: tip.lng }
+        : { lat: d.latestCoordinates.lat, lng: d.latestCoordinates.lng };
     });
 
   const isCmd = (deviceId: string, type: string) => !!commandStates[`${deviceId}:${type}`];
 
   return (
-    <div className="absolute inset-0 z-0 h-full w-full">
-      <MapContainer
-        center={center}
-        zoom={devices.length ? 13 : 5}
-        style={{ height: "100%", width: "100%" }}
-        zoomControl={false}
-        attributionControl={false}
-      >
-        <TileLayer
-          attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
-          url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-        />
-        <ZoomControl position="bottomright" />
-        <FitBounds points={pinPoints} enabled={autoFit && !focusPoint} />
-        <FocusOn point={focusPoint} />
+    <MapShell defaultCenter={center} defaultZoom={devices.length ? 13 : 5}>
+      <FitBounds points={pinPoints} enabled={autoFit && !focusPoint} padding={72} maxZoom={16} />
+      <PanTo point={focusPoint} />
 
-        {devices.map((d) => {
-          const track = trackByDevice.get(d.deviceId);
-          const gps = track?.points || [];
-          const path = (track?.route && track.route.length >= 2 ? track.route : gps).filter(
-            (p) => p.lat != null && p.lng != null
-          );
-          const latlngs: [number, number][] = path.map((p) => [p.lat, p.lng]);
-          const tipGps = gps.length > 0 ? gps[gps.length - 1] : null;
-          const markerPos: [number, number] = tipGps
-            ? [tipGps.lat, tipGps.lng]
-            : [d.latestCoordinates.lat, d.latestCoordinates.lng];
-          const color = TRACK_COLOR[d.freshness];
-          const selected = selectedDeviceId === d.deviceId;
-          const plate = vehicleLabel(d.vehicle);
-          const accuracyM =
-            d.latestAccuracy != null &&
-            d.latestAccuracy > 0 &&
-            d.latestAccuracy <= ACCURACY_CIRCLE_HIDE_ABOVE_M
-              ? Math.min(d.latestAccuracy, ACCURACY_CIRCLE_MAX_M)
-              : null;
+      {devices.map((d) => {
+        const track = trackByDevice.get(d.deviceId);
+        const gps = track?.points || [];
+        const path = (track?.route && track.route.length >= 2 ? track.route : gps).filter(
+          (p) => p.lat != null && p.lng != null
+        );
+        const latlngs: LatLng[] = path.map((p) => ({ lat: p.lat, lng: p.lng }));
+        const tipGps = gps.length > 0 ? gps[gps.length - 1] : null;
+        const markerPos: LatLng = tipGps
+          ? { lat: tipGps.lat, lng: tipGps.lng }
+          : { lat: d.latestCoordinates.lat, lng: d.latestCoordinates.lng };
+        const color = TRACK_COLOR[d.freshness];
+        const selected = selectedDeviceId === d.deviceId;
+        const plate = vehicleLabel(d.vehicle);
+        const accuracyM =
+          d.latestAccuracy != null &&
+          d.latestAccuracy > 0 &&
+          d.latestAccuracy <= ACCURACY_CIRCLE_HIDE_ABOVE_M
+            ? Math.min(d.latestAccuracy, ACCURACY_CIRCLE_MAX_M)
+            : null;
 
-          return (
-            <span key={d.deviceId}>
-              {latlngs.length > 1 && (
-                <>
-                  <Polyline
-                    positions={latlngs}
-                    pathOptions={{
-                      color,
-                      weight: selected ? 5 : 4,
-                      opacity: selected ? 0.95 : 0.8,
-                    }}
-                  />
-                  <CircleMarker
-                    center={latlngs[0]}
-                    radius={5}
-                    pathOptions={{ color: "#fff", weight: 2, fillColor: color, fillOpacity: 1 }}
-                  >
-                    <Popup>
-                      <p className="text-xs font-semibold text-slate-700">Trail start</p>
-                      {gps[0]?.recordedAt && (
-                        <p className="text-xs text-slate-500">
-                          {new Date(gps[0].recordedAt).toLocaleTimeString()}
-                        </p>
-                      )}
-                    </Popup>
-                  </CircleMarker>
-                </>
-              )}
+        const startKey = `start:${d.deviceId}`;
+        const pinKey = `pin:${d.deviceId}`;
 
-              {accuracyM != null && (
-                <Circle
-                  center={markerPos}
-                  radius={accuracyM}
-                  pathOptions={{
-                    color,
-                    fillOpacity: 0.08,
-                    weight: 1.5,
-                    dashArray: "5,5",
-                  }}
+        return (
+          <span key={d.deviceId}>
+            {latlngs.length > 1 && (
+              <>
+                <Polyline
+                  path={latlngs}
+                  strokeColor={color}
+                  strokeWeight={selected ? 5 : 4}
+                  strokeOpacity={selected ? 0.95 : 0.8}
                 />
-              )}
+                <AdvancedMarker
+                  position={latlngs[0]}
+                  onClick={() => setOpenInfo(startKey)}
+                  title="Trail start"
+                >
+                  <span
+                    className="block h-2.5 w-2.5 rounded-full border-2 border-white"
+                    style={{ backgroundColor: color }}
+                  />
+                </AdvancedMarker>
+                {openInfo === startKey && (
+                  <InfoWindow position={latlngs[0]} onCloseClick={() => setOpenInfo(null)}>
+                    <p className="text-xs font-semibold text-slate-700">Trail start</p>
+                    {gps[0]?.recordedAt && (
+                      <p className="text-xs text-slate-500">
+                        {new Date(gps[0].recordedAt).toLocaleTimeString()}
+                      </p>
+                    )}
+                  </InfoWindow>
+                )}
+              </>
+            )}
 
-              <Marker
+            {accuracyM != null && (
+              <Circle
+                center={markerPos}
+                radius={accuracyM}
+                strokeColor={color}
+                strokeWeight={1.5}
+                strokeOpacity={0.8}
+                fillColor={color}
+                fillOpacity={0.08}
+              />
+            )}
+
+            <AdvancedMarker
+              position={markerPos}
+              title={d.employeeName || d.deviceId}
+              onClick={() => {
+                onSelectDevice?.(d.deviceId);
+                setOpenInfo(pinKey);
+              }}
+            >
+              <PinGlyph color={color} selected={selected} />
+            </AdvancedMarker>
+
+            {openInfo === pinKey && (
+              <InfoWindow
                 position={markerPos}
-                icon={makeIcon(color, selected)}
-                eventHandlers={{
-                  click: () => onSelectDevice?.(d.deviceId),
-                }}
+                pixelOffset={[0, -36]}
+                onCloseClick={() => setOpenInfo(null)}
               >
-                <Popup className="fleet-map-popup">
-                  <div className="min-w-[210px] space-y-2 font-sans text-sm">
-                    <div>
-                      <p className="font-bold text-slate-900">{d.employeeName || d.deviceId}</p>
-                      {plate && <p className="font-mono text-xs text-slate-600">{plate}</p>}
-                    </div>
-                    <div className="space-y-0.5 text-xs text-slate-600">
-                      {d.latestSpeed != null && (
-                        <p>{(d.latestSpeed * 3.6).toFixed(1)} km/h</p>
-                      )}
-                      {latlngs.length > 1 && (
-                        <p>
-                          {gps.length} GPS · {latlngs.length} route pts
-                          {track?.snapped ? " · road-matched" : ""}
-                        </p>
-                      )}
-                      {d.batteryPercent != null && <p>Battery: {d.batteryPercent}%</p>}
-                      {d.lastReceivedAt && d.ageMinutes != null && (
-                        <p className="text-slate-400">
-                          {d.ageMinutes < 1 ? "< 1" : Math.round(d.ageMinutes)} min ago
-                        </p>
-                      )}
-                    </div>
-                    {onCommand && (
-                      <div className="flex flex-wrap gap-1.5 border-t border-slate-100 pt-2">
-                        <CmdButton
-                          label="Start"
-                          icon={<Radio className="h-3 w-3" />}
-                          busy={isCmd(d.deviceId, "location_start_tracking")}
-                          onClick={() => onCommand(d.deviceId, "location_start_tracking")}
-                          tone="live"
-                        />
-                        <CmdButton
-                          label="End"
-                          icon={<StopCircle className="h-3 w-3" />}
-                          busy={isCmd(d.deviceId, "location_stop_tracking")}
-                          onClick={() => onCommand(d.deviceId, "location_stop_tracking")}
-                          tone="stop"
-                        />
-                        <CmdButton
-                          label="Latest"
-                          icon={<Navigation className="h-3 w-3" />}
-                          busy={isCmd(d.deviceId, "location_latest")}
-                          onClick={() => onCommand(d.deviceId, "location_latest")}
-                        />
-                        <CmdButton
-                          label="Upload"
-                          icon={<Satellite className="h-3 w-3" />}
-                          busy={isCmd(d.deviceId, "location_upload")}
-                          onClick={() => onCommand(d.deviceId, "location_upload")}
-                        />
-                      </div>
+                <div className="min-w-[210px] space-y-2 font-sans text-sm">
+                  <div>
+                    <p className="font-bold text-slate-900">{d.employeeName || d.deviceId}</p>
+                    {plate && <p className="font-mono text-xs text-slate-600">{plate}</p>}
+                  </div>
+                  <div className="space-y-0.5 text-xs text-slate-600">
+                    {d.latestSpeed != null && <p>{(d.latestSpeed * 3.6).toFixed(1)} km/h</p>}
+                    {latlngs.length > 1 && (
+                      <p>
+                        {gps.length} GPS · {latlngs.length} route pts
+                        {track?.snapped ? " · road-matched" : ""}
+                      </p>
+                    )}
+                    {d.batteryPercent != null && <p>Battery: {d.batteryPercent}%</p>}
+                    {d.lastReceivedAt && d.ageMinutes != null && (
+                      <p className="text-slate-400">
+                        {d.ageMinutes < 1 ? "< 1" : Math.round(d.ageMinutes)} min ago
+                      </p>
                     )}
                   </div>
-                </Popup>
-              </Marker>
-            </span>
-          );
-        })}
-      </MapContainer>
-    </div>
+                  {onCommand && (
+                    <div className="flex flex-wrap gap-1.5 border-t border-slate-100 pt-2">
+                      <CmdButton
+                        label="Start"
+                        icon={<Radio className="h-3 w-3" />}
+                        busy={isCmd(d.deviceId, "location_start_tracking")}
+                        onClick={() => onCommand(d.deviceId, "location_start_tracking")}
+                        tone="live"
+                      />
+                      <CmdButton
+                        label="End"
+                        icon={<StopCircle className="h-3 w-3" />}
+                        busy={isCmd(d.deviceId, "location_stop_tracking")}
+                        onClick={() => onCommand(d.deviceId, "location_stop_tracking")}
+                        tone="stop"
+                      />
+                      <CmdButton
+                        label="Live"
+                        icon={<Zap className="h-3 w-3" />}
+                        busy={isCmd(d.deviceId, "location_live_mode")}
+                        onClick={() => onCommand(d.deviceId, "location_live_mode")}
+                        tone="live"
+                      />
+                      <CmdButton
+                        label="Live off"
+                        icon={<ZapOff className="h-3 w-3" />}
+                        busy={isCmd(d.deviceId, "location_stop_live_mode")}
+                        onClick={() => onCommand(d.deviceId, "location_stop_live_mode")}
+                        tone="stop"
+                      />
+                      <CmdButton
+                        label="Latest"
+                        icon={<Navigation className="h-3 w-3" />}
+                        busy={isCmd(d.deviceId, "location_latest")}
+                        onClick={() => onCommand(d.deviceId, "location_latest")}
+                      />
+                      <CmdButton
+                        label="Upload"
+                        icon={<Satellite className="h-3 w-3" />}
+                        busy={isCmd(d.deviceId, "location_upload")}
+                        onClick={() => onCommand(d.deviceId, "location_upload")}
+                      />
+                    </div>
+                  )}
+                </div>
+              </InfoWindow>
+            )}
+          </span>
+        );
+      })}
+    </MapShell>
   );
 }

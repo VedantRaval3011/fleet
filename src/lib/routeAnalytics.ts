@@ -70,14 +70,33 @@ export function bearingDeg(a: RoutePoint, b: RoutePoint): number {
   return (Math.atan2(y, x) * 180) / Math.PI + 360;
 }
 
-/** Heading for a point, preferring reported bearing, else computed from neighbours. */
+/** Smallest displacement (m) that counts as real movement rather than GPS jitter. */
+const HEADING_MIN_MOVE_M = 8;
+/** How far to look for a moving neighbour before giving up on geometry. */
+const HEADING_LOOKAROUND = 8;
+
+/**
+ * Heading for a point, derived from geometry first.
+ *
+ * The reported `bearingDegrees` is unusable while a vehicle is stopped — Android
+ * emits 0.0 when it has no fix on the direction of travel — so trusting it made
+ * the playback arrow snap north for the whole of every idle period and again on
+ * the first fix after it. Walking back to the nearest point that actually moved
+ * holds the last true direction through a stop and picks the new one up as soon
+ * as the vehicle rolls, which keeps the arrow continuous across idle events.
+ */
 export function headingAt(points: RoutePoint[], idx: number): number {
   const p = points[idx];
-  if (p?.bearingDegrees != null) return p.bearingDegrees;
-  const prev = points[idx - 1];
-  const next = points[idx + 1];
-  if (prev && p) return bearingDeg(prev, p) % 360;
-  if (p && next) return bearingDeg(p, next) % 360;
+  if (!p) return 0;
+
+  for (let j = idx - 1; j >= 0 && idx - j <= HEADING_LOOKAROUND; j--) {
+    if (haversineM(points[j], p) >= HEADING_MIN_MOVE_M) return bearingDeg(points[j], p) % 360;
+  }
+  for (let j = idx + 1; j < points.length && j - idx <= HEADING_LOOKAROUND; j++) {
+    if (haversineM(p, points[j]) >= HEADING_MIN_MOVE_M) return bearingDeg(p, points[j]) % 360;
+  }
+
+  if (p.bearingDegrees != null) return ((p.bearingDegrees % 360) + 360) % 360;
   return 0;
 }
 
@@ -86,6 +105,31 @@ export interface ColoredSegment {
   color: string;
   band: SpeedBand;
   positions: [number, number][];
+  /** True when the samples either side are far apart in time — logging gap. */
+  isGap: boolean;
+}
+
+/** Interval longer than this is treated as a logging gap, not a sampled leg. */
+const GAP_MS = 5 * 60_000;
+/** Below this displacement a long interval is a stop, not a gap. */
+const STATIONARY_RADIUS_M = 60;
+/**
+ * Above this interval, the two endpoint speed readings are instantaneous samples
+ * that say nothing about the leg between them — use the implied speed instead.
+ */
+const IMPLIED_SPEED_MIN_MS = 15_000;
+
+/** Average speed (km/h) actually travelled between two samples. */
+function intervalKmh(a: RoutePoint, b: RoutePoint): number {
+  const dtMs = new Date(b.recordedAt).getTime() - new Date(a.recordedAt).getTime();
+  const reported = (speedKmh(a) + speedKmh(b)) / 2;
+  if (!Number.isFinite(dtMs) || dtMs <= 0) return reported;
+  const implied = (haversineM(a, b) / (dtMs / 1000)) * 3.6;
+  // Short intervals: the implied speed is dominated by GPS jitter, so the
+  // reported readings are the better estimate. Long ones (a stop collapsed by
+  // the track filter, or a downsampled leg) are the other way round — reporting
+  // the pre-stop speed there painted parked stretches as high-speed red.
+  return dtMs >= IMPLIED_SPEED_MIN_MS ? implied : reported;
 }
 
 export function speedSegments(points: RoutePoint[]): ColoredSegment[] {
@@ -94,16 +138,24 @@ export function speedSegments(points: RoutePoint[]): ColoredSegment[] {
   let current: ColoredSegment | null = null;
 
   for (let i = 1; i < points.length; i++) {
-    const kmh = (speedKmh(points[i - 1]) + speedKmh(points[i])) / 2;
+    const prev = points[i - 1];
+    const cur = points[i];
+    const kmh = intervalKmh(prev, cur);
     const band = bandForSpeed(kmh);
     const color = colorForSpeed(kmh);
-    const a: [number, number] = [points[i - 1].latitude, points[i - 1].longitude];
-    const b: [number, number] = [points[i].latitude, points[i].longitude];
 
-    if (current && current.band === band) {
+    const dtMs = new Date(cur.recordedAt).getTime() - new Date(prev.recordedAt).getTime();
+    const isGap = dtMs >= GAP_MS && haversineM(prev, cur) > STATIONARY_RADIUS_M;
+
+    const a: [number, number] = [prev.latitude, prev.longitude];
+    const b: [number, number] = [cur.latitude, cur.longitude];
+
+    if (current && current.band === band && current.isGap === isGap) {
       current.positions.push(b);
     } else {
-      current = { color, band, positions: [a, b] };
+      // Each new run restarts at the previous point so the drawn route stays
+      // unbroken across band changes.
+      current = { color, band, positions: [a, b], isGap };
       segments.push(current);
     }
   }
@@ -122,17 +174,34 @@ export interface IdleEvent {
   durationMs: number;
 }
 
+/**
+ * Find the stretches where the vehicle was parked.
+ *
+ * Detection is per-interval rather than per-point. `/api/location/history` runs
+ * the trail through `filterGpsTrack`, which collapses a standstill down to a
+ * keepalive fix every few minutes — so a stop is often represented by two
+ * samples whose *reported* speeds are both non-zero (the last reading before
+ * stopping and the first after pulling away). Testing point speeds alone missed
+ * those stops entirely and charged the time to driving, which is what made both
+ * the idle total and the average speed wrong. Comparing displacement against
+ * elapsed time recovers them: no distance covered over minutes is a stop, no
+ * matter what the individual fixes claim.
+ */
 export function detectIdleEvents(
   points: RoutePoint[],
-  opts: { minIdleMs?: number; idleSpeedKmh?: number } = {}
+  opts: { minIdleMs?: number; idleSpeedKmh?: number; idleRadiusM?: number } = {}
 ): IdleEvent[] {
   const minIdleMs = opts.minIdleMs ?? 3 * 60_000;
   const idleSpeedKmh = opts.idleSpeedKmh ?? 3;
+  const idleRadiusM = opts.idleRadiusM ?? STATIONARY_RADIUS_M;
   const events: IdleEvent[] = [];
 
   let runStart = -1;
   const flush = (endIdx: number) => {
-    if (runStart < 0) return;
+    if (runStart < 0 || endIdx <= runStart) {
+      runStart = -1;
+      return;
+    }
     const s = points[runStart];
     const e = points[endIdx];
     const durationMs = new Date(e.recordedAt).getTime() - new Date(s.recordedAt).getTime();
@@ -151,16 +220,49 @@ export function detectIdleEvents(
     runStart = -1;
   };
 
-  for (let i = 0; i < points.length; i++) {
-    const idle = speedKmh(points[i]) <= idleSpeedKmh;
-    if (idle) {
-      if (runStart < 0) runStart = i;
+  for (let i = 1; i < points.length; i++) {
+    const a = points[i - 1];
+    const b = points[i];
+    const dtMs = new Date(b.recordedAt).getTime() - new Date(a.recordedAt).getTime();
+    const dist = haversineM(a, b);
+    const impliedKmh = dtMs > 0 ? (dist / (dtMs / 1000)) * 3.6 : 0;
+
+    const stationary =
+      dist <= idleRadiusM &&
+      (impliedKmh <= idleSpeedKmh ||
+        (speedKmh(a) <= idleSpeedKmh && speedKmh(b) <= idleSpeedKmh));
+
+    if (stationary) {
+      if (runStart < 0) runStart = i - 1;
     } else {
-      flush(i - 1 >= 0 ? i - 1 : 0);
+      // The stop ends at the last stationary sample, i-1, not at this moving one.
+      flush(i - 1);
     }
   }
   flush(points.length - 1);
   return events;
+}
+
+/** The idle event the cursor sits inside, if any. */
+export function idleEventAt(events: IdleEvent[], idx: number): IdleEvent | null {
+  return events.find((e) => idx >= e.startIdx && idx <= e.endIdx) ?? null;
+}
+
+/**
+ * Idle time accumulated from the start of the route up to (and including) [idx],
+ * counting only the elapsed part of a stop the cursor is currently inside.
+ */
+export function idleMsUpTo(events: IdleEvent[], points: RoutePoint[], idx: number): number {
+  const at = points[idx] ? new Date(points[idx].recordedAt).getTime() : 0;
+  let total = 0;
+  for (const e of events) {
+    if (e.endIdx <= idx) {
+      total += e.durationMs;
+    } else if (e.startIdx <= idx) {
+      total += Math.max(0, at - new Date(e.startTime).getTime());
+    }
+  }
+  return total;
 }
 
 // ─── Speed-limit violations ──────────────────────────────────────────────────
@@ -287,9 +389,67 @@ export function tripStats(points: RoutePoint[], idle: IdleEvent[]): TripStats | 
 }
 
 export function formatDuration(ms: number): string {
-  const mins = Math.max(0, Math.floor(ms / 60000));
+  const totalSec = Math.max(0, Math.round(ms / 1000));
+  // Sub-minute stops used to render as a bare "0m", which read as "no idle at
+  // all" during playback. Show seconds until there is a minute to show.
+  if (totalSec < 60) return `${totalSec}s`;
+  const mins = Math.floor(totalSec / 60);
   if (mins < 60) return `${mins}m`;
   return `${Math.floor(mins / 60)}h ${mins % 60}m`;
+}
+
+/** Duration with seconds retained under an hour — for the live playback readout. */
+export function formatDurationPrecise(ms: number): string {
+  const totalSec = Math.max(0, Math.round(ms / 1000));
+  const h = Math.floor(totalSec / 3600);
+  const m = Math.floor((totalSec % 3600) / 60);
+  const s = totalSec % 60;
+  if (h > 0) return `${h}h ${m}m`;
+  if (m > 0) return `${m}m ${s}s`;
+  return `${s}s`;
+}
+
+// ─── Battery ─────────────────────────────────────────────────────────────────
+export interface BatteryStats {
+  startPercent: number;
+  endPercent: number;
+  minPercent: number;
+  maxPercent: number;
+  /** Positive when the battery drained over the route. */
+  dropPercent: number;
+}
+
+/**
+ * Battery level at [idx]. Not every fix carries one, so fall back to the nearest
+ * reading either side — the level is a slow-moving signal and a hole in the
+ * samples should not blank the readout mid-playback.
+ */
+export function batteryAt(points: RoutePoint[], idx: number): number | null {
+  if (points[idx]?.batteryPercent != null) return points[idx].batteryPercent!;
+  for (let d = 1; d < points.length; d++) {
+    const before = points[idx - d];
+    if (before?.batteryPercent != null) return before.batteryPercent;
+    const after = points[idx + d];
+    if (after?.batteryPercent != null) return after.batteryPercent;
+    if (idx - d < 0 && idx + d >= points.length) break;
+  }
+  return null;
+}
+
+export function batteryStats(points: RoutePoint[]): BatteryStats | null {
+  const levels = points
+    .map((p) => p.batteryPercent)
+    .filter((v): v is number => v != null && Number.isFinite(v));
+  if (levels.length === 0) return null;
+  const startPercent = levels[0];
+  const endPercent = levels[levels.length - 1];
+  return {
+    startPercent,
+    endPercent,
+    minPercent: Math.min(...levels),
+    maxPercent: Math.max(...levels),
+    dropPercent: startPercent - endPercent,
+  };
 }
 
 // ─── Per-device colour ───────────────────────────────────────────────────────

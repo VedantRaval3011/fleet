@@ -125,28 +125,17 @@
   }
 }
 
-/* Fleet map — Google-style Leaflet chrome */
-.leaflet-bottom.leaflet-right {
-  margin-bottom: 12px;
-  margin-right: 12px;
-}
-.leaflet-control-zoom {
-  border: none !important;
-  border-radius: 9999px !important;
-  overflow: hidden;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2) !important;
-}
-.leaflet-control-zoom a {
-  width: 36px !important;
-  height: 36px !important;
-  line-height: 36px !important;
-  border: none !important;
-  color: #334155 !important;
-}
-.fleet-map-popup .leaflet-popup-content-wrapper {
+/* Google Maps InfoWindow — match the app's card styling, and drop the default
+   padding so our own popup markup controls spacing. */
+.gm-style .gm-style-iw-c {
   border-radius: 12px;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);
+  padding: 12px 14px;
 }
-.fleet-map-popup .leaflet-popup-content {
-  margin: 12px 14px;
+.gm-style .gm-style-iw-d {
+  overflow: auto !important;
+}
+/* The default InfoWindow tail and close button clash with our compact popups. */
+.gm-style .gm-style-iw-tc::after {
+  background: #fff;
 }

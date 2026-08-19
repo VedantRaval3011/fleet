@@ -3,19 +3,32 @@ import { haversineMeters } from "@/lib/gpsTrackFilter";
 
 export type LatLng = { lat: number; lng: number };
 
-const DEFAULT_OSRM = "https://router.project-osrm.org";
-const CHUNK = 80;
+const ROADS_ENDPOINT = "https://roads.googleapis.com/v1/snapToRoads";
+/** Roads API hard limit is 100 points per snapToRoads request. */
+const CHUNK = 100;
 const MATCH_MIN_SPACING_M = 35;
 const CACHE_TTL_MS = 25_000;
 
 type CacheEntry = { route: LatLng[]; expires: number };
 const routeCache = new Map<string, CacheEntry>();
 
-function osrmBase(): string {
-  return (process.env.OSRM_URL || DEFAULT_OSRM).replace(/\/$/, "");
+/**
+ * Server-side key. Prefer a dedicated one: the browser key is HTTP-referrer
+ * restricted, which the Roads API (a server-to-server call) cannot satisfy.
+ */
+function roadsApiKey(): string {
+  return (
+    process.env.GOOGLE_MAPS_SERVER_API_KEY ||
+    process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY ||
+    ""
+  ).trim();
 }
 
-/** Space points so OSRM map-matching has a clean driving trace. */
+export function hasRoadsApiKey(): boolean {
+  return roadsApiKey().length > 0;
+}
+
+/** Space points so map-matching sees a clean driving trace. */
 function thinForMatch(points: RawTrackPoint[], minM = MATCH_MIN_SPACING_M): RawTrackPoint[] {
   if (points.length <= 2) return points;
   const out: RawTrackPoint[] = [points[0]];
@@ -52,21 +65,14 @@ function cacheKey(deviceId: string, points: RawTrackPoint[]): string {
 async function matchChunk(points: RawTrackPoint[]): Promise<LatLng[] | null> {
   if (points.length < 2) return null;
 
-  const coords = points.map((p) => `${p.lng},${p.lat}`).join(";");
-  const timestamps = points
-    .map((p) => Math.floor(new Date(p.recordedAt).getTime() / 1000))
-    .join(";");
-  const radiuses = points
-    .map((p) => {
-      const acc = p.accuracyMeters != null && p.accuracyMeters > 0 ? p.accuracyMeters : 25;
-      return Math.min(Math.max(acc, 15), 60);
-    })
-    .join(";");
+  const key = roadsApiKey();
+  if (!key) return null;
 
+  const path = points.map((p) => `${p.lat},${p.lng}`).join("|");
   const url =
-    `${osrmBase()}/match/v1/driving/${coords}` +
-    `?overview=full&geometries=geojson&tidy=true&gaps=ignore` +
-    `&timestamps=${timestamps}&radiuses=${radiuses}`;
+    `${ROADS_ENDPOINT}?interpolate=true` +
+    `&path=${encodeURIComponent(path)}` +
+    `&key=${encodeURIComponent(key)}`;
 
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 8_000);
@@ -75,23 +81,31 @@ async function matchChunk(points: RawTrackPoint[]): Promise<LatLng[] | null> {
       signal: ctrl.signal,
       headers: { Accept: "application/json" },
     });
-    if (!res.ok) return null;
+    if (!res.ok) {
+      // 403 here almost always means the Roads API is not enabled on the key,
+      // or the key is referrer-restricted. Log once per failure, then fall back.
+      console.warn(`Roads API snapToRoads failed: ${res.status} ${res.statusText}`);
+      return null;
+    }
+
     const data = (await res.json()) as {
-      code?: string;
-      matchings?: { geometry?: { coordinates?: [number, number][] } }[];
+      snappedPoints?: { location?: { latitude?: number; longitude?: number } }[];
+      error?: { message?: string };
     };
-    if (data.code !== "Ok" || !data.matchings?.length) return null;
+    if (data.error) {
+      console.warn(`Roads API error: ${data.error.message}`);
+      return null;
+    }
+    if (!data.snappedPoints?.length) return null;
 
     const route: LatLng[] = [];
-    for (const m of data.matchings) {
-      const coordsGeo = m.geometry?.coordinates;
-      if (!coordsGeo?.length) continue;
-      for (const [lng, lat] of coordsGeo) {
-        if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
-        const prev = route[route.length - 1];
-        if (prev && prev.lat === lat && prev.lng === lng) continue;
-        route.push({ lat, lng });
-      }
+    for (const sp of data.snappedPoints) {
+      const lat = sp.location?.latitude;
+      const lng = sp.location?.longitude;
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
+      const prev = route[route.length - 1];
+      if (prev && prev.lat === lat && prev.lng === lng) continue;
+      route.push({ lat: lat as number, lng: lng as number });
     }
     return route.length >= 2 ? route : null;
   } catch {
@@ -102,7 +116,7 @@ async function matchChunk(points: RawTrackPoint[]): Promise<LatLng[] | null> {
 }
 
 /**
- * Snap a filtered GPS trail onto the road network (OSRM map matching).
+ * Snap a filtered GPS trail onto the road network (Google Roads API).
  * Returns null if matching fails — caller should fall back to raw GPS.
  */
 export async function snapTrackToRoads(
@@ -110,6 +124,7 @@ export async function snapTrackToRoads(
   points: RawTrackPoint[]
 ): Promise<LatLng[] | null> {
   if (points.length < 2) return null;
+  if (!hasRoadsApiKey()) return null;
 
   const key = cacheKey(deviceId, points);
   const hit = routeCache.get(key);
@@ -124,9 +139,7 @@ export async function snapTrackToRoads(
     const chunk = thinned.slice(start, start + CHUNK);
     if (chunk.length < 2) break;
     const matched = await matchChunk(chunk);
-    const piece =
-      matched ??
-      chunk.map((p) => ({ lat: p.lat, lng: p.lng }));
+    const piece = matched ?? chunk.map((p) => ({ lat: p.lat, lng: p.lng }));
 
     if (snapped.length === 0) {
       snapped.push(...piece);
@@ -158,6 +171,8 @@ export async function snapTracksToRoads(
   concurrency = 3
 ): Promise<Map<string, LatLng[]>> {
   const out = new Map<string, LatLng[]>();
+  if (!hasRoadsApiKey()) return out;
+
   let i = 0;
 
   async function worker() {

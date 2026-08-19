@@ -5,7 +5,7 @@ import connectToDatabase from "@/lib/db";
 import LocationPoint from "@/models/LocationPoint";
 import { companyIdIn } from "@/lib/companyIdQuery";
 import { filterGpsTrack, type RawTrackPoint } from "@/lib/gpsTrackFilter";
-import { snapTracksToRoads } from "@/lib/osrmMapMatch";
+import { snapTracksToRoads } from "@/lib/googleRoadsMatch";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;

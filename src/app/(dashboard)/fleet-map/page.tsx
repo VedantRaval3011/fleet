@@ -15,6 +15,8 @@ import {
   MapPin,
   Menu,
   List,
+  Zap,
+  ZapOff,
 } from "lucide-react";
 import dynamic from "next/dynamic";
 import { useSidebar } from "@/components/layout/SidebarContext";
@@ -321,7 +323,7 @@ export default function FleetMapPage() {
               )}
             </div>
 
-            <div className="mt-3 grid grid-cols-4 gap-1.5">
+            <div className="mt-3 grid grid-cols-3 gap-1.5">
               <ActionBtn
                 label="Start"
                 icon={<Radio className="h-3.5 w-3.5" />}
@@ -334,6 +336,22 @@ export default function FleetMapPage() {
                 icon={<StopCircle className="h-3.5 w-3.5" />}
                 busy={isCmd(selected.deviceId, "location_stop_tracking")}
                 onClick={() => sendCommand(selected.deviceId, "location_stop_tracking")}
+                tone="stop"
+              />
+              {/* Live mode pins the device to 2s sampling so this map tracks it
+                  in near real time; turn it off to return to battery-saving. */}
+              <ActionBtn
+                label="Live"
+                icon={<Zap className="h-3.5 w-3.5" />}
+                busy={isCmd(selected.deviceId, "location_live_mode")}
+                onClick={() => sendCommand(selected.deviceId, "location_live_mode")}
+                tone="live"
+              />
+              <ActionBtn
+                label="Live off"
+                icon={<ZapOff className="h-3.5 w-3.5" />}
+                busy={isCmd(selected.deviceId, "location_stop_live_mode")}
+                onClick={() => sendCommand(selected.deviceId, "location_stop_live_mode")}
                 tone="stop"
               />
               <ActionBtn

@@ -24,6 +24,7 @@ import {
   Zap,
   PauseCircle,
   Filter,
+  BatteryMedium,
 } from "lucide-react";
 import { format } from "date-fns";
 import dynamic from "next/dynamic";
@@ -35,7 +36,12 @@ import {
   maxSpeedPoint,
   tripStats,
   formatDuration,
+  formatDurationPrecise,
   deviceColor,
+  batteryAt,
+  batteryStats,
+  idleEventAt,
+  idleMsUpTo,
   type MaxSpeed,
   type TripStats,
 } from "@/lib/routeAnalytics";
@@ -87,6 +93,12 @@ const STATUS_CHIP: Record<string, string> = {
 
 const SPEED_LIMIT_KEY = "fleet.route.speedLimit.";
 
+const PLAYBACK_SPEEDS = [0.5, 1, 2, 4] as const;
+/** Half speed by default — 1× stepped through a day's route too fast to follow. */
+const DEFAULT_PLAYBACK_SPEED = 0.5;
+/** Frame interval at 1×; slower rates stretch it instead of taking part-steps. */
+const PLAYBACK_TICK_MS = 60;
+
 function vehicleLabel(vehicle: FleetDevice["vehicle"]): string | undefined {
   if (!vehicle) return undefined;
   if (typeof vehicle === "string") return vehicle;
@@ -99,14 +111,17 @@ function deviceDisplayName(d: FleetDevice): string {
 
 async function reverseGeocode(lat: number, lng: number): Promise<string> {
   const fallback = `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
+  const key = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
+  if (!key) return fallback;
   try {
     const res = await fetch(
-      `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lng}&zoom=16`,
+      `https://maps.googleapis.com/maps/api/geocode/json?latlng=${lat},${lng}` +
+        `&result_type=street_address|premise|route|neighborhood&key=${key}`,
       { headers: { Accept: "application/json" } }
     );
     if (!res.ok) return fallback;
     const data = await res.json();
-    return data.display_name || fallback;
+    return data.results?.[0]?.formatted_address || fallback;
   } catch {
     return fallback;
   }
@@ -144,7 +159,7 @@ export default function RouteHistoryPage() {
 
   const [playbackIndex, setPlaybackIndex] = useState<number | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
-  const [speed, setSpeed] = useState(1);
+  const [speed, setSpeed] = useState(DEFAULT_PLAYBACK_SPEED);
 
   // Collapsible panels
   const [filtersMinimized, setFiltersMinimized] = useState(false);
@@ -332,6 +347,7 @@ export default function RouteHistoryPage() {
   const resetPlayback = () => {
     setIsPlaying(false);
     setPlaybackIndex(null);
+    setSpeed(DEFAULT_PLAYBACK_SPEED);
   };
 
   const viewRoute = useCallback(async () => {
@@ -403,14 +419,19 @@ export default function RouteHistoryPage() {
 
   useEffect(() => {
     if (!isPlaying || displayedPoints.length < 2) return;
-    const step = Math.max(1, Math.ceil(displayedPoints.length / 300)) * speed;
+    // Sub-1× rates slow the tick rather than shrinking the step: a fractional
+    // step would land the cursor between samples, and every consumer indexes
+    // `displayedPoints` directly.
+    const baseStep = Math.max(1, Math.ceil(displayedPoints.length / 300));
+    const step = speed >= 1 ? baseStep * speed : baseStep;
+    const tickMs = speed >= 1 ? PLAYBACK_TICK_MS : Math.round(PLAYBACK_TICK_MS / speed);
     const id = setInterval(() => {
       setPlaybackIndex((idx) => {
         const next = (idx ?? 0) + step;
         if (next >= displayedPoints.length - 1) return displayedPoints.length - 1;
         return next;
       });
-    }, 60);
+    }, tickMs);
     return () => clearInterval(id);
   }, [isPlaying, speed, displayedPoints.length]);
 
@@ -461,6 +482,53 @@ export default function RouteHistoryPage() {
       : displayedPoints[0]
         ? format(new Date(displayedPoints[0].recordedAt), "HH:mm:ss")
         : "--:--:--";
+
+  // Readouts that track the scrubber, so idle and battery stay truthful at
+  // every position rather than only in the whole-trip totals.
+  const cursorIdx = playbackIndex ?? 0;
+  const cursorBattery = useMemo(
+    () => (displayedPoints.length ? batteryAt(displayedPoints, cursorIdx) : null),
+    [displayedPoints, cursorIdx]
+  );
+  const activeIdle = useMemo(
+    () => idleEventAt(idleEvents, cursorIdx),
+    [idleEvents, cursorIdx]
+  );
+  const activeIdleElapsedMs =
+    activeIdle && displayedPoints[cursorIdx]
+      ? Math.max(
+          0,
+          new Date(displayedPoints[cursorIdx].recordedAt).getTime() -
+            new Date(activeIdle.startTime).getTime()
+        )
+      : 0;
+  const idleSoFarMs = useMemo(
+    () => idleMsUpTo(idleEvents, displayedPoints, cursorIdx),
+    [idleEvents, displayedPoints, cursorIdx]
+  );
+  const battery = useMemo(() => batteryStats(displayedPoints), [displayedPoints]);
+
+  /**
+   * Idle stretches painted onto the scrubber track, so the stops in a route are
+   * visible before you scrub onto them.
+   */
+  const idleTrackGradient = useMemo(() => {
+    const n = displayedPoints.length;
+    if (n < 2 || idleEvents.length === 0) return undefined;
+    const stops: string[] = [];
+    let at = 0;
+    for (const e of idleEvents) {
+      const from = (e.startIdx / (n - 1)) * 100;
+      const to = (e.endIdx / (n - 1)) * 100;
+      if (to <= at) continue;
+      stops.push(`transparent ${at}%`, `transparent ${Math.max(at, from)}%`);
+      stops.push(`#93c5fd ${Math.max(at, from)}%`, `#93c5fd ${to}%`);
+      at = to;
+    }
+    if (stops.length === 0) return undefined;
+    stops.push(`transparent ${at}%`, "transparent 100%");
+    return `linear-gradient(to right, ${stops.join(", ")})`;
+  }, [displayedPoints.length, idleEvents]);
 
   const hasRoute = displayedPoints.length > 0 && !!stats;
 
@@ -699,6 +767,16 @@ export default function RouteHistoryPage() {
               <Stat icon={<Gauge className="h-3 w-3" />} label="Avg / Max" value={`${stats!.avgKmh.toFixed(0)} / ${stats!.maxKmh.toFixed(0)}`} />
               <Stat icon={<MapPin className="h-3 w-3" />} label="Stops" value={`${stats!.stops}`} />
               <Stat icon={<AlertTriangle className="h-3 w-3" />} label="Violations" value={`${violations.length}`} />
+              {battery && (
+                <Stat
+                  icon={<BatteryMedium className="h-3 w-3" />}
+                  label="Battery"
+                  value={`${battery.startPercent}% → ${battery.endPercent}%`}
+                  hint={`Low ${battery.minPercent}% · ${
+                    battery.dropPercent > 0 ? `-${battery.dropPercent}` : `+${-battery.dropPercent}`
+                  }% over the route`}
+                />
+              )}
             </div>
 
             <div className="mt-2 space-y-1.5 border-t border-slate-100 pt-2 text-xs">
@@ -909,20 +987,69 @@ export default function RouteHistoryPage() {
             <span className="w-16 shrink-0 font-mono text-xs tabular-nums text-slate-600">
               {playbackTime}
             </span>
-            <input
-              type="range"
-              min={0}
-              max={Math.max(0, displayedPoints.length - 1)}
-              value={playbackIndex ?? 0}
-              onChange={(e) => {
-                setIsPlaying(false);
-                setPlaybackIndex(Number(e.target.value));
-              }}
-              className="min-w-0 flex-1"
-              style={{ accentColor: accent }}
-            />
+
+            <div className="relative min-w-0 flex-1">
+              {idleTrackGradient && (
+                <span
+                  aria-hidden
+                  className="pointer-events-none absolute inset-x-0 top-1/2 h-1.5 -translate-y-1/2 rounded-full"
+                  style={{ backgroundImage: idleTrackGradient }}
+                />
+              )}
+              <input
+                type="range"
+                min={0}
+                max={Math.max(0, displayedPoints.length - 1)}
+                value={playbackIndex ?? 0}
+                onChange={(e) => {
+                  setIsPlaying(false);
+                  setPlaybackIndex(Number(e.target.value));
+                }}
+                className="relative w-full bg-transparent"
+                style={{ accentColor: accent }}
+              />
+            </div>
+
+            {/* Live idle + battery readouts, alongside the existing time/speed */}
+            <div className="hidden shrink-0 items-center gap-1.5 sm:flex">
+              <span
+                className={`inline-flex items-center gap-1 rounded-full px-2 py-1 text-[11px] font-semibold tabular-nums ${
+                  activeIdle ? "bg-blue-100 text-blue-700" : "bg-slate-100 text-slate-500"
+                }`}
+                title={
+                  activeIdle
+                    ? `Stopped here for ${formatDurationPrecise(activeIdle.durationMs)} · ${formatDurationPrecise(idleSoFarMs)} idle so far`
+                    : `${formatDurationPrecise(idleSoFarMs)} idle so far · ${formatDurationPrecise(stats!.idleMs)} total`
+                }
+              >
+                <PauseCircle className="h-3 w-3" />
+                {activeIdle
+                  ? formatDurationPrecise(activeIdleElapsedMs)
+                  : formatDurationPrecise(idleSoFarMs)}
+              </span>
+              {cursorBattery != null && (
+                <span
+                  className={`inline-flex items-center gap-1 rounded-full px-2 py-1 text-[11px] font-semibold tabular-nums ${
+                    cursorBattery <= 15
+                      ? "bg-rose-100 text-rose-700"
+                      : cursorBattery <= 35
+                        ? "bg-amber-100 text-amber-700"
+                        : "bg-emerald-100 text-emerald-700"
+                  }`}
+                  title={
+                    battery
+                      ? `Battery ${cursorBattery}% · route ${battery.startPercent}% → ${battery.endPercent}% (low ${battery.minPercent}%)`
+                      : `Battery ${cursorBattery}%`
+                  }
+                >
+                  <BatteryMedium className="h-3 w-3" />
+                  {cursorBattery}%
+                </span>
+              )}
+            </div>
+
             <div className="flex shrink-0 gap-1">
-              {[1, 2, 4].map((sp) => (
+              {PLAYBACK_SPEEDS.map((sp) => (
                 <button
                   key={sp}
                   type="button"
@@ -1017,13 +1144,15 @@ function Stat({
   icon,
   label,
   value,
+  hint,
 }: {
   icon: ReactNode;
   label: string;
   value: string;
+  hint?: string;
 }) {
   return (
-    <div className="rounded-xl bg-slate-50 px-2.5 py-2">
+    <div className="rounded-xl bg-slate-50 px-2.5 py-2" title={hint}>
       <p className="flex items-center gap-1 text-[10px] font-medium uppercase tracking-wide text-slate-400">
         {icon}
         {label}
