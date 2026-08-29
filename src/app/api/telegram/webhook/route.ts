@@ -3,9 +3,10 @@ import connectToDatabase from "@/lib/db";
 import IdentifiedContact from "@/models/IdentifiedContact";
 import UnknownNumberTracker from "@/models/UnknownNumberTracker";
 import EmployeeTelegram from "@/models/EmployeeTelegram";
-import { runContactIntelligence } from "@/lib/contactIntelligence";
+import BotLog from "@/models/BotLog";
+import { runContactIntelligence, saveScenarioBName } from "@/lib/contactIntelligence";
 import DeviceCallLog from "@/models/DeviceCallLog";
-import CallLog from "@/models/CallLog";
+import { phoneKey, employeeKey, displayPhone } from "@/lib/contactKey";
 import {
   answerCallbackQuery,
   editMessageText,
@@ -18,7 +19,7 @@ import {
 function isValidRequest(req: Request): boolean {
   const expectedSecret = process.env.TELEGRAM_WEBHOOK_SECRET;
   if (!expectedSecret) return true; // If no secret configured, allow (for local dev)
-  
+
   const providedSecret = req.headers.get("x-telegram-bot-api-secret-token");
   if (providedSecret !== expectedSecret) {
     console.warn(`[Webhook Auth] Token mismatch. Expected: '${expectedSecret}', got: '${providedSecret}'`);
@@ -27,15 +28,22 @@ function isValidRequest(req: Request): boolean {
   return true;
 }
 
+/** Canonical record key for the two intelligence collections. */
+function recordKey(rawPhone: string, rawEmployee: string) {
+  return { phoneKey: phoneKey(rawPhone), employeeKey: employeeKey(rawEmployee) };
+}
+
 /**
  * After an employee links their Telegram, process all their pending contacts
  * that couldn't be sent before (because chatId was null at the time).
  */
 async function processPendingForEmployee(employeeName: string) {
   try {
+    const eKey = employeeKey(employeeName);
+
     // 1. Scenario A: IdentifiedContacts with a name but no category (needs_category)
     const pendingIdentified = await IdentifiedContact.find({
-      employeeName,
+      employeeKey: eKey,
       contactName: { $exists: true, $ne: null },
       $or: [{ category: null }, { category: { $exists: false } }],
     }).lean();
@@ -53,11 +61,14 @@ async function processPendingForEmployee(employeeName: string) {
       }
     }
 
-    // 2. Scenario B: UnknownNumberTrackers at threshold still in 'tracking' status
+    // 2. Scenario B: trackers at threshold still waiting on a name or a category
     const pendingTrackers = await UnknownNumberTracker.find({
-      employeeName,
-      status: "tracking",
-      callCount: { $gte: 5 },
+      employeeKey: eKey,
+      $or: [
+        { status: "tracking", callCount: { $gte: 5 } },
+        { status: "awaiting_category" },
+        { status: "awaiting_name", telegramMessageId: null, nameRequestSentAt: null },
+      ],
     }).lean();
 
     for (const tracker of pendingTrackers) {
@@ -136,22 +147,68 @@ async function handleCallbackQuery(query: any) {
   if (data.startsWith("cat:")) {
     const parts = data.split(":");
     const [, phonePart, empPart, ...catParts] = parts;
-    const phoneNumber = decodeURIComponent(phonePart);
+    const rawPhone = decodeURIComponent(phonePart);
     const employeeName = decodeURIComponent(empPart);
     const category = decodeURIComponent(catParts.join(":"));
+    const key = recordKey(rawPhone, employeeName);
+    const phoneNumber = displayPhone(rawPhone);
 
     await answerCallbackQuery(callbackId, `Category saved: ${category}`);
 
+    const existing = await IdentifiedContact.findOne(key);
+
+    // Tapping the same keyboard twice (or an old message resurfacing) must not
+    // re-run the flow and send a second "did you save it?" prompt.
+    if (existing?.category) {
+      const already =
+        `✅ <b>Contact Classified</b>\n\n` +
+        (existing.contactName ? `Name: <b>${existing.contactName}</b>\n` : "") +
+        `Category: <b>${existing.category}</b>\n` +
+        `Number: <code>${existing.phoneNumber || phoneNumber}</code>`;
+      await editMessageText(chatId, messageId, already);
+      return;
+    }
+
+    // Recover the name from the tracker if the IdentifiedContact has none yet, so
+    // we never persist a record that has a category but no name (such a record can
+    // never reach the terminal state and would be prompted forever).
+    const tracker = await UnknownNumberTracker.findOne(key);
+    const resolvedName = existing?.contactName || undefined;
+
     const contact = await IdentifiedContact.findOneAndUpdate(
-      { phoneNumber, employeeName },
-      { $set: { category, identifiedAt: new Date(), telegramChatId: String(chatId) } },
+      key,
+      {
+        $set: {
+          category,
+          identifiedAt: new Date(),
+          telegramChatId: String(chatId),
+          phoneNumber: existing?.phoneNumber || phoneNumber,
+          employeeName: existing?.employeeName || employeeName,
+          ...(resolvedName ? { contactName: resolvedName } : {}),
+        },
+        $setOnInsert: {
+          ...key,
+          deviceId: tracker?.deviceId ?? "",
+          savedInPhone: false,
+          remindLater: false,
+          categoryPromptCount: 0,
+          savePromptCount: 0,
+        },
+      },
       { upsert: true, new: true }
     );
 
-    await UnknownNumberTracker.updateOne(
-      { phoneNumber, employeeName },
-      { $set: { status: "identified" } }
-    );
+    await UnknownNumberTracker.updateOne(key, { $set: { status: "identified" } });
+
+    if (!contact.contactName) {
+      await BotLog.create({
+        level: "warn",
+        step: "CATEGORY_WITHOUT_NAME",
+        message: `Category "${category}" recorded for ${phoneNumber} but no contact name is stored yet`,
+        employeeName,
+        phoneNumber,
+      }).catch(() => {});
+    }
 
     const displayName =
       contact.contactName && contact.contactName !== phoneNumber
@@ -164,6 +221,9 @@ async function handleCallbackQuery(query: any) {
       `✅ <b>Contact Classified</b>\n\n${nameLine}Category: <b>${category}</b>\nNumber: <code>${phoneNumber}</code>`
     );
 
+    // Already saved in their phone? Then there is nothing left to ask.
+    if (contact.savedInPhone) return;
+
     const confirmLine = displayName
       ? `Name: <b>${displayName}</b>\nNumber: <code>${phoneNumber}</code>`
       : `Number: <code>${phoneNumber}</code>`;
@@ -173,20 +233,40 @@ async function handleCallbackQuery(query: any) {
       confirmLine;
 
     await sendInlineKeyboard(chatId, saveText, saveContactKeyboard(phoneNumber, employeeName));
+    await IdentifiedContact.updateOne(
+      key,
+      { $set: { lastReminderSentAt: new Date() }, $inc: { savePromptCount: 1 } }
+    );
     return;
   }
 
   // Saved confirmation: saved:<phone>:<employee>
   if (data.startsWith("saved:")) {
     const [, phonePart, empPart] = data.split(":");
-    const phoneNumber = decodeURIComponent(phonePart);
+    const rawPhone = decodeURIComponent(phonePart);
     const employeeName = decodeURIComponent(empPart);
+    const key = recordKey(rawPhone, employeeName);
 
     await answerCallbackQuery(callbackId, "Great! Contact saved ✅");
-    await IdentifiedContact.updateOne(
-      { phoneNumber, employeeName },
-      { $set: { savedInPhone: true, remindLater: false } }
+
+    // Terminal: classified + saved in phone. runContactIntelligence checks exactly
+    // this and returns immediately, so the number can never surface again.
+    const res = await IdentifiedContact.updateOne(
+      key,
+      { $set: { savedInPhone: true, remindLater: false, completedAt: new Date() } }
     );
+    await UnknownNumberTracker.updateOne(key, { $set: { status: "identified" } });
+
+    if (res.matchedCount === 0) {
+      await BotLog.create({
+        level: "error",
+        step: "SAVED_NO_MATCH",
+        message: `"Saved" tapped but no IdentifiedContact matched key ${key.phoneKey}/${key.employeeKey}`,
+        employeeName,
+        phoneNumber: displayPhone(rawPhone),
+      }).catch(() => {});
+    }
+
     await editMessageText(chatId, messageId, `✅ Perfect! Contact has been saved in your phone.`);
     return;
   }
@@ -194,14 +274,12 @@ async function handleCallbackQuery(query: any) {
   // Remind Later: remind:<phone>:<employee>
   if (data.startsWith("remind:")) {
     const [, phonePart, empPart] = data.split(":");
-    const phoneNumber = decodeURIComponent(phonePart);
+    const rawPhone = decodeURIComponent(phonePart);
     const employeeName = decodeURIComponent(empPart);
+    const key = recordKey(rawPhone, employeeName);
 
     await answerCallbackQuery(callbackId, "We'll remind you later ⏰");
-    await IdentifiedContact.updateOne(
-      { phoneNumber, employeeName },
-      { $set: { remindLater: true } }
-    );
+    await IdentifiedContact.updateOne(key, { $set: { remindLater: true } });
     await editMessageText(
       chatId,
       messageId,
@@ -248,20 +326,19 @@ async function handleMessage(message: any) {
     });
 
     if (tracker) {
-      const { phoneNumber, employeeName } = tracker;
+      const { employeeName } = tracker;
       const contactName = text;
+      const key = { phoneKey: tracker.phoneKey, employeeKey: tracker.employeeKey };
+      const phoneNumber = tracker.phoneNumber;
 
-      await IdentifiedContact.findOneAndUpdate(
-        { phoneNumber, employeeName },
-        {
-          $set: { contactName, telegramChatId: String(chatId), deviceId: tracker.deviceId },
-          $setOnInsert: { phoneNumber, employeeName },
-        },
-        { upsert: true, new: true }
-      );
-
-      tracker.status = "awaiting_category";
-      await tracker.save();
+      await saveScenarioBName({
+        key,
+        contactName,
+        phoneNumber,
+        employeeName,
+        chatId: String(chatId),
+        deviceId: tracker.deviceId ?? "",
+      });
 
       const categoryText =
         `✅ <b>Name saved!</b>\n\n` +

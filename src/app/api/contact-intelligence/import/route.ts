@@ -4,6 +4,7 @@ import { authOptions } from "@/lib/auth";
 import connectToDatabase from "@/lib/db";
 import IdentifiedContact from "@/models/IdentifiedContact";
 import { normalizePhoneNumber } from "@/lib/phone";
+import { phoneKey, employeeKey } from "@/lib/contactKey";
 import * as XLSX from "xlsx";
 
 export const maxDuration = 60;
@@ -181,11 +182,21 @@ export async function POST(req: Request) {
     if (r.contactName) update.contactName = r.contactName;
     if (r.category) update.category = r.category;
 
+    // Key on the canonical identity so re-importing a sheet that formats numbers
+    // differently updates the existing row instead of creating a duplicate.
+    const key = { phoneKey: phoneKey(r.phoneNumber), employeeKey: employeeKey(employeeName) };
+    if (!key.phoneKey) {
+      skipped++;
+      skipReasons["unusable_phone"] = (skipReasons["unusable_phone"] ?? 0) + 1;
+      continue;
+    }
+
     const res = await IdentifiedContact.findOneAndUpdate(
-      { phoneNumber: r.phoneNumber, employeeName },
+      key,
       {
         $set: update,
         $setOnInsert: {
+          ...key,
           phoneNumber: r.phoneNumber,
           employeeName,
           deviceId: "",
