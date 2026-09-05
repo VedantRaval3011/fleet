@@ -31,4 +31,7 @@ ContactSchema.index({ deviceId: 1, phoneNumber: 1 }, { unique: true });
 ContactSchema.index({ phoneKey: 1, employeeName: 1 });
 ContactSchema.index({ employeeName: 1 });
 
+// The contact bank lists company contacts sorted by employee then contact name.
+ContactSchema.index({ employeeName: 1, contactName: 1 });
+
 export default mongoose.models.Contact || mongoose.model<IContact>('Contact', ContactSchema);

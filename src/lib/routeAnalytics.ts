@@ -473,3 +473,89 @@ export function deviceColor(deviceId: string): string {
   }
   return DEVICE_PALETTE[Math.abs(hash) % DEVICE_PALETTE.length];
 }
+
+// ─── Point lookup for map hover / click ──────────────────────────────────────
+
+/**
+ * Index of the sample nearest a map coordinate.
+ *
+ * Hovering or clicking the drawn route lands on the polyline, not on a sample,
+ * so the readout has to resolve a coordinate back to the point it describes.
+ * Distance is compared in an equirectangular approximation — over the span of a
+ * single route it ranks identically to haversine and costs a fraction as much,
+ * which matters when this runs on every pointer move.
+ */
+export function nearestPointIndex(points: RoutePoint[], lat: number, lng: number): number {
+  if (points.length === 0) return -1;
+  const kx = Math.cos((lat * Math.PI) / 180);
+  let best = 0;
+  let bestD = Infinity;
+  for (let i = 0; i < points.length; i++) {
+    const dy = points[i].latitude - lat;
+    const dx = (points[i].longitude - lng) * kx;
+    const d = dy * dy + dx * dx;
+    if (d < bestD) {
+      bestD = d;
+      best = i;
+    }
+  }
+  return best;
+}
+
+/** Running distance in metres from the first sample to each point. */
+export function cumulativeDistancesM(points: RoutePoint[]): number[] {
+  const out = new Array<number>(points.length);
+  let total = 0;
+  for (let i = 0; i < points.length; i++) {
+    if (i > 0) total += haversineM(points[i - 1], points[i]);
+    out[i] = total;
+  }
+  return out;
+}
+
+/** Human label for the speed band a reading falls in. */
+export function labelForSpeed(kmh: number): string {
+  const band = bandForSpeed(kmh);
+  return SPEED_BANDS.find((b) => b.band === band)!.label;
+}
+
+/** The leg travelled into [idx] — what the drawn segment at that point means. */
+export interface RouteLeg {
+  fromIdx: number;
+  toIdx: number;
+  distanceM: number;
+  durationMs: number;
+  /** Speed the drawn segment is coloured by — implied over long intervals. */
+  kmh: number;
+  band: SpeedBand;
+  color: string;
+  isGap: boolean;
+}
+
+export function legAt(points: RoutePoint[], idx: number): RouteLeg | null {
+  // The first point has no leg behind it, so describe the one ahead of it.
+  const to = idx <= 0 ? 1 : idx;
+  const a = points[to - 1];
+  const b = points[to];
+  if (!a || !b) return null;
+  const kmh = intervalKmh(a, b);
+  const durationMs = new Date(b.recordedAt).getTime() - new Date(a.recordedAt).getTime();
+  return {
+    fromIdx: to - 1,
+    toIdx: to,
+    distanceM: haversineM(a, b),
+    durationMs,
+    kmh,
+    band: bandForSpeed(kmh),
+    color: colorForSpeed(kmh),
+    isGap: durationMs >= GAP_MS && haversineM(a, b) > STATIONARY_RADIUS_M,
+  };
+}
+
+/** The speeding stretch a point sits inside, if any. */
+export function violationAt(
+  violations: ViolationSegment[],
+  idx: number
+): ViolationSegment | null {
+  return violations.find((v) => idx >= v.startIdx && idx <= v.endIdx) ?? null;
+}

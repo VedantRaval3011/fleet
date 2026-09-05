@@ -18,4 +18,8 @@ const DriverSchema = new Schema(
   { timestamps: true }
 );
 
+// The dashboard counts active drivers per company and joins drivers to users.
+DriverSchema.index({ companyId: 1, status: 1 });
+DriverSchema.index({ userId: 1 });
+
 export default mongoose.models.Driver || mongoose.model<IDriver>('Driver', DriverSchema);
