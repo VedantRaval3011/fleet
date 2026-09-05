@@ -1,7 +1,7 @@
 "use client";
 
 import { AdvancedMarker, InfoWindow, useMap } from "@vis.gl/react-google-maps";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import MapShell from "@/components/maps/MapShell";
 import { FitBounds, Polyline, type LatLng } from "@/components/maps/overlays";
 import {
@@ -16,6 +16,11 @@ import {
   idleEventAt,
   formatDuration,
   formatDurationPrecise,
+  cumulativeDistancesM,
+  labelForSpeed,
+  legAt,
+  nearestPointIndex,
+  violationAt,
   VIOLATION_COLOR,
 } from "@/lib/routeAnalytics";
 
@@ -115,6 +120,12 @@ function fmtTime(iso: string) {
 const DIRECTION_ARROW_PATH = "M 0 -7 L 5 6 L 0 2.5 L -5 6 Z";
 /** Pixel spacing between direction arrows — constant on screen at any zoom. */
 const DIRECTION_ARROW_REPEAT = "110px";
+/**
+ * Stroke width of the invisible line that catches route hover and clicks. Wider
+ * than the drawn route so a thin line at low zoom is still comfortable to hit,
+ * and wide enough to cover the direction arrows drawn on top of it.
+ */
+const ROUTE_HIT_WEIGHT = 20;
 
 /** Direction-of-travel arrow, rotated to the heading. */
 function ArrowGlyph({
@@ -204,58 +215,237 @@ function IdleGlyph({ size = 32 }: { size?: number }) {
   );
 }
 
-function batteryTone(pct: number): string {
-  if (pct <= 15) return "text-rose-600";
-  if (pct <= 35) return "text-amber-600";
-  return "text-emerald-600";
+type Tone = "good" | "warn" | "bad";
+
+interface Fact {
+  k: string;
+  v: string;
+  tone?: Tone;
+}
+
+interface PointReadout {
+  title: string;
+  /** Short flag shown beside the title — mock fix, logging gap, speeding. */
+  badge?: { text: string; tone: Tone };
+  facts: Fact[];
+}
+
+function batteryTone(pct: number): Tone | undefined {
+  if (pct <= 15) return "bad";
+  if (pct <= 35) return "warn";
+  return undefined;
+}
+
+/** Time of day only — for spans, where the date is already established. */
+function fmtClock(iso: string) {
+  return new Date(iso).toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
+function fmtDistance(m: number): string {
+  return m < 1000 ? `${m.toFixed(0)} m` : `${(m / 1000).toFixed(2)} km`;
 }
 
 /**
- * Readout that follows the route cursor. Rendered inside the marker's own DOM
- * rather than an InfoWindow so hovering cannot flicker: the card is a child of
- * the element being hovered, so it never steals the pointer from it.
+ * Everything known about one sample, assembled once and rendered by both the
+ * hover card and the click InfoWindow so the two can never drift apart.
+ *
+ * Rows are omitted rather than shown empty: a route replayed from an older
+ * client carries no altitude or battery, and blank rows read as missing data
+ * rather than as data the device never sent.
  */
-function CursorHoverCard({
-  point,
+function readoutFor({
+  points,
+  idx,
   battery,
-  idle,
-  idleElapsedMs,
+  idleEvents,
+  violations,
+  speedLimitKmh,
+  cumDistM,
 }: {
-  point: LocationPoint;
+  points: LocationPoint[];
+  idx: number;
   battery: number | null;
-  idle: IdleEvent | null;
-  idleElapsedMs: number;
-}) {
+  idleEvents: IdleEvent[];
+  violations: ViolationSegment[];
+  speedLimitKmh: number;
+  cumDistM: number[];
+}): PointReadout | null {
+  const p = points[idx];
+  if (!p) return null;
+
+  const idle = idleEventAt(idleEvents, idx);
+  const violation = violationAt(violations, idx);
+  const leg = legAt(points, idx);
+  const kmh = speedKmh(p);
+  const startMs = points[0] ? new Date(points[0].recordedAt).getTime() : 0;
+  const atMs = new Date(p.recordedAt).getTime();
+  const idleElapsedMs = idle
+    ? Math.max(0, atMs - new Date(idle.startTime).getTime())
+    : 0;
+
+  const facts: Fact[] = [
+    { k: "Time", v: fmtTime(p.recordedAt) },
+    { k: "Elapsed", v: formatDurationPrecise(Math.max(0, atMs - startMs)) },
+    { k: "Speed", v: `${kmh.toFixed(1)} km/h · ${labelForSpeed(kmh)}` },
+  ];
+
+  if (leg) {
+    // The drawn line is coloured by the speed actually made good over the leg,
+    // which is the number the map is showing — spell it out next to the fix's
+    // own instantaneous reading so a red stretch under a "0 km/h" point makes
+    // sense.
+    facts.push({ k: "Segment", v: `${leg.kmh.toFixed(1)} km/h avg` });
+    facts.push({
+      k: "Leg",
+      v: `${fmtDistance(leg.distanceM)} in ${formatDurationPrecise(leg.durationMs)}`,
+    });
+  }
+
+  facts.push({ k: "Distance", v: fmtDistance(cumDistM[idx] ?? 0) });
+
+  if (battery != null) {
+    // batteryAt falls back to the nearest neighbouring reading, so mark a value
+    // this fix did not itself carry rather than presenting it as measured here.
+    const exact = p.batteryPercent != null;
+    facts.push({
+      k: "Battery",
+      v: `${exact ? "" : "≈ "}${battery}%`,
+      tone: batteryTone(battery),
+    });
+  }
+
+  if (idle) {
+    facts.push({
+      k: "Idle",
+      v: `${formatDurationPrecise(idleElapsedMs)} of ${formatDurationPrecise(idle.durationMs)}`,
+      tone: "warn",
+    });
+  }
+
+  if (violation) {
+    facts.push({
+      k: "Over limit",
+      v: `peak ${violation.peakKmh.toFixed(1)} km/h${speedLimitKmh > 0 ? ` vs ${speedLimitKmh}` : ""}`,
+      tone: "bad",
+    });
+    facts.push({
+      k: "Speeding",
+      v: `${fmtClock(violation.startTime)} → ${fmtClock(violation.endTime)} · ${formatDuration(violation.durationMs)}`,
+      tone: "bad",
+    });
+  }
+
+  facts.push({ k: "Heading", v: `${headingAt(points, idx).toFixed(0)}°` });
+  if (p.bearingDegrees != null)
+    facts.push({ k: "Bearing", v: `${p.bearingDegrees.toFixed(0)}° reported` });
+  if (p.accuracyMeters != null)
+    facts.push({
+      k: "Accuracy",
+      v: `±${p.accuracyMeters.toFixed(0)} m`,
+      tone: p.accuracyMeters > 50 ? "warn" : undefined,
+    });
+  if (p.altitudeMeters != null)
+    facts.push({ k: "Altitude", v: `${p.altitudeMeters.toFixed(0)} m` });
+  if (p.provider) facts.push({ k: "Source", v: p.provider });
+  facts.push({ k: "Coords", v: `${p.latitude.toFixed(5)}, ${p.longitude.toFixed(5)}` });
+  facts.push({
+    k: "Point",
+    v: `${idx + 1} of ${points.length}${p.sequenceNumber != null ? ` · #${p.sequenceNumber}` : ""}`,
+  });
+
+  const badge: PointReadout["badge"] | undefined = p.isMockLocation
+    ? { text: "mock", tone: "bad" }
+    : violation
+      ? { text: "speeding", tone: "bad" }
+      : leg?.isGap
+        ? { text: "gap", tone: "warn" }
+        : idle
+          ? { text: "stopped", tone: "warn" }
+          : undefined;
+
+  return {
+    title: idle ? "Stopped here" : violation ? "Speeding here" : "GPS point",
+    badge,
+    facts,
+  };
+}
+
+const DARK_TONE: Record<Tone, string> = {
+  good: "text-emerald-300",
+  warn: "text-amber-300",
+  bad: "text-rose-300",
+};
+const LIGHT_TONE: Record<Tone, string> = {
+  good: "text-emerald-600",
+  warn: "text-amber-600",
+  bad: "text-rose-600",
+};
+
+/**
+ * Dark readout card. Rendered inside marker DOM rather than an InfoWindow so
+ * hovering cannot flicker: the card is a child of the element being hovered, so
+ * it never steals the pointer from it.
+ */
+function HoverCard({ readout }: { readout: PointReadout }) {
+  return (
+    <div className="w-max min-w-49 rounded-lg bg-slate-900/95 px-2.5 py-2 font-sans text-[11px] leading-tight text-white shadow-lg">
+      <p className="mb-1 flex items-center gap-1.5 border-b border-white/10 pb-1 font-semibold">
+        {readout.title}
+        {readout.badge && (
+          <span
+            className={`text-[9px] font-bold uppercase tracking-wide ${DARK_TONE[readout.badge.tone]}`}
+          >
+            {readout.badge.text}
+          </span>
+        )}
+      </p>
+      {readout.facts.map((f) => (
+        <DarkRow key={f.k} k={f.k} v={f.v} tone={f.tone} />
+      ))}
+    </div>
+  );
+}
+
+/** Hover card anchored above the marker it belongs to, revealed on hover. */
+function MarkerHoverCard({ readout }: { readout: PointReadout }) {
   return (
     <div className="pointer-events-none absolute bottom-full left-1/2 z-10 mb-1.5 hidden -translate-x-1/2 group-hover:block">
-      <div className="w-max min-w-[168px] rounded-lg bg-slate-900/95 px-2.5 py-2 font-sans text-[11px] leading-tight text-white shadow-lg">
-        <DarkRow k="Time" v={fmtTime(point.recordedAt)} />
-        <DarkRow k="Speed" v={`${speedKmh(point).toFixed(1)} km/h`} />
-        <DarkRow
-          k="Battery"
-          v={battery != null ? `${battery}%` : "—"}
-          tone={battery != null ? batteryTone(battery) : undefined}
-        />
-        {idle && (
-          <DarkRow
-            k="Idle"
-            v={`${formatDurationPrecise(idleElapsedMs)} of ${formatDurationPrecise(idle.durationMs)}`}
-          />
-        )}
-        {point.accuracyMeters != null && (
-          <DarkRow k="Accuracy" v={`±${point.accuracyMeters.toFixed(0)} m`} />
-        )}
-      </div>
+      <HoverCard readout={readout} />
       <div className="mx-auto h-0 w-0 border-x-[5px] border-t-[5px] border-x-transparent border-t-slate-900/95" />
     </div>
   );
 }
 
-function DarkRow({ k, v, tone }: { k: string; v: string; tone?: string }) {
+/** The same readout on the light InfoWindow surface, for a clicked point. */
+function ReadoutList({ readout }: { readout: PointReadout }) {
+  return (
+    <div className="min-w-52 font-sans text-xs">
+      <p className="mb-1.5 flex items-center gap-1.5 font-bold text-slate-900">
+        {readout.title}
+        {readout.badge && (
+          <span
+            className={`text-[10px] font-semibold uppercase ${LIGHT_TONE[readout.badge.tone]}`}
+          >
+            {readout.badge.text}
+          </span>
+        )}
+      </p>
+      {readout.facts.map((f) => (
+        <Row key={f.k} k={f.k} v={f.v} tone={f.tone} />
+      ))}
+    </div>
+  );
+}
+
+function DarkRow({ k, v, tone }: { k: string; v: string; tone?: Tone }) {
   return (
     <div className="flex justify-between gap-3 py-[1px]">
       <span className="text-slate-400">{k}</span>
-      <span className={`font-semibold ${tone ?? "text-white"}`}>{v}</span>
+      <span className={`font-semibold ${tone ? DARK_TONE[tone] : "text-white"}`}>{v}</span>
     </div>
   );
 }
@@ -276,6 +466,10 @@ export default function RouteHistoryMap({
   onFocusConsumed,
 }: Props) {
   const [openInfo, setOpenInfo] = useState<string | null>(null);
+  /** Sample under the pointer while the route itself is hovered. */
+  const [hoverIdx, setHoverIdx] = useState<number | null>(null);
+  /** Sample kept open after a click on the route, until it is dismissed. */
+  const [pinnedIdx, setPinnedIdx] = useState<number | null>(null);
 
   const routeKey = useMemo(
     () =>
@@ -284,6 +478,16 @@ export default function RouteHistoryMap({
         : "",
     [points]
   );
+
+  // Hover and click hold sample indices, which mean nothing once a different
+  // route is loaded — drop them as the route changes rather than in an effect,
+  // so no frame ever renders a readout against the wrong points.
+  const [lastRouteKey, setLastRouteKey] = useState(routeKey);
+  if (routeKey !== lastRouteKey) {
+    setLastRouteKey(routeKey);
+    setHoverIdx(null);
+    setPinnedIdx(null);
+  }
 
   const latlngs = useMemo<LatLng[]>(
     () => points.map((p) => ({ lat: p.latitude, lng: p.longitude })),
@@ -341,6 +545,8 @@ export default function RouteHistoryMap({
     () => visiblePoints.map((p) => ({ lat: p.latitude, lng: p.longitude })),
     [visiblePoints]
   );
+  /** The route as actually drawn — the arrows and the hover hit line share it. */
+  const drawnLatLngs = arrowPath;
   const directionIcons = useMemo(
     () => [
       {
@@ -360,6 +566,69 @@ export default function RouteHistoryMap({
   );
 
   const violationPolylines = showViolations ? violations : [];
+
+  // ─── Route hover / click readouts ──────────────────────────────────────────
+  // Distances are cumulative over the whole route, so they are built once per
+  // route rather than re-walked on every pointer move.
+  const cumDistM = useMemo(() => cumulativeDistancesM(points), [points]);
+
+  const buildReadout = useCallback(
+    (idx: number) =>
+      readoutFor({
+        points,
+        idx,
+        battery: batteryAt(points, idx),
+        idleEvents,
+        violations,
+        speedLimitKmh,
+        cumDistM,
+      }),
+    [points, idleEvents, violations, speedLimitKmh, cumDistM]
+  );
+
+  /**
+   * Pointer position on the drawn line resolved back to the sample it belongs
+   * to. The line is a rendering of the samples, not a surveyed path, so the
+   * nearest fix is the point whose data the user is asking about.
+   */
+  const idxAtEvent = useCallback(
+    (e: google.maps.PolyMouseEvent): number | null => {
+      const ll = e.latLng;
+      if (!ll || visiblePoints.length === 0) return null;
+      // Search only the drawn portion — during playback the rest of the route
+      // is not on screen, and a leg that doubles back would otherwise report a
+      // point the user cannot see. Indices match `points`, which it prefixes.
+      const idx = nearestPointIndex(visiblePoints, ll.lat(), ll.lng());
+      return idx >= 0 ? idx : null;
+    },
+    [visiblePoints]
+  );
+
+  const handleRouteMove = useCallback(
+    (e: google.maps.PolyMouseEvent) => {
+      const idx = idxAtEvent(e);
+      // Only re-render when the described sample actually changes; a pointer
+      // move within one sample's stretch of line is not new information.
+      setHoverIdx((prev) => (prev === idx ? prev : idx));
+    },
+    [idxAtEvent]
+  );
+
+  const handleRouteClick = useCallback(
+    (e: google.maps.PolyMouseEvent) => {
+      const idx = idxAtEvent(e);
+      if (idx == null) return;
+      setPinnedIdx(idx);
+      setOpenInfo(null);
+    },
+    [idxAtEvent]
+  );
+
+  const hoverReadout = hoverIdx != null ? buildReadout(hoverIdx) : null;
+  const hoverPoint = hoverIdx != null ? points[hoverIdx] : null;
+  const pinnedReadout = pinnedIdx != null ? buildReadout(pinnedIdx) : null;
+  const pinnedPoint = pinnedIdx != null ? points[pinnedIdx] : null;
+  const cursorReadout = readoutPoint ? buildReadout(readoutIdx) : null;
 
   return (
     <MapShell defaultCenter={center} defaultZoom={points.length ? 14 : 5}>
@@ -444,7 +713,9 @@ export default function RouteHistoryMap({
             />
           )}
 
-          {/* Speeding segments highlight */}
+          {/* Speeding segments highlight. Not clickable itself — the hit line
+              below covers the whole route and reports the speeding stretch as
+              part of the point's own readout. */}
           {violationPolylines.map((v) => (
             <Polyline
               key={v.id}
@@ -452,27 +723,76 @@ export default function RouteHistoryMap({
               strokeColor={VIOLATION_COLOR}
               strokeWeight={7}
               strokeOpacity={0.55}
-              onClick={() => setOpenInfo(`v:${v.id}`)}
             />
           ))}
 
-          {violationPolylines.map((v) =>
-            openInfo === `v:${v.id}` ? (
-              <InfoWindow
-                key={`vi-${v.id}`}
-                position={toLatLng(v.positions[Math.floor(v.positions.length / 2)])}
-                onCloseClick={() => setOpenInfo(null)}
+          {/* Invisible hit line over the drawn route.
+              Wide and topmost so hovering or clicking anywhere along the route
+              — including on the direction arrows riding it — resolves to the
+              sample under the pointer. Kept separate from the coloured segments
+              so hit-testing is one continuous path rather than per-band pieces
+              with gaps at the joins. */}
+          {drawnLatLngs.length > 1 && (
+            <Polyline
+              path={drawnLatLngs}
+              strokeColor="#000000"
+              // Not fully transparent: a 0-opacity stroke is not reliably
+              // hit-tested, and 1% of black under a 20px line is invisible.
+              strokeOpacity={0.01}
+              strokeWeight={ROUTE_HIT_WEIGHT}
+              zIndex={10}
+              onMouseMove={handleRouteMove}
+              onMouseOut={() => setHoverIdx(null)}
+              onClick={handleRouteClick}
+            />
+          )}
+
+          {/* Hover readout — pointer-events-none so the card cannot pull the
+              pointer off the line it describes and flicker itself away. */}
+          {hoverPoint && hoverReadout && hoverIdx !== pinnedIdx && (
+            <AdvancedMarker
+              position={{ lat: hoverPoint.latitude, lng: hoverPoint.longitude }}
+              className="pointer-events-none"
+              zIndex={2000}
+            >
+              {/* Marker content is anchored by its bottom edge, so the column
+                  is nudged down by half the dot to sit on the sample itself. */}
+              <div
+                className="pointer-events-none relative flex flex-col items-center"
+                style={{ transform: "translateY(5px)" }}
               >
-                <div className="min-w-[180px] font-sans text-xs">
-                  <p className="mb-1 font-bold text-rose-700">Speed violation</p>
-                  <Row k="Peak" v={`${v.peakKmh.toFixed(1)} km/h`} />
-                  {speedLimitKmh > 0 && <Row k="Limit" v={`${speedLimitKmh} km/h`} />}
-                  <Row k="Start" v={fmtTime(v.startTime)} />
-                  <Row k="End" v={fmtTime(v.endTime)} />
-                  <Row k="Duration" v={formatDuration(v.durationMs)} />
-                </div>
+                <HoverCard readout={hoverReadout} />
+                <div className="h-0 w-0 border-x-[5px] border-t-[5px] border-x-transparent border-t-slate-900/95" />
+                <span
+                  className="mt-0.5 block h-2.5 w-2.5 rounded-full border-2 border-white shadow"
+                  style={{ backgroundColor: deviceColor }}
+                />
+              </div>
+            </AdvancedMarker>
+          )}
+
+          {/* Clicked point — stays open until dismissed, so the numbers can be
+              read and copied without holding the pointer still. */}
+          {pinnedPoint && pinnedReadout && (
+            <>
+              <AdvancedMarker
+                position={{ lat: pinnedPoint.latitude, lng: pinnedPoint.longitude }}
+                zIndex={1500}
+                onClick={() => setPinnedIdx(null)}
+              >
+                <span
+                  className="block h-3.5 w-3.5 rounded-full border-2 border-white shadow-md"
+                  style={{ backgroundColor: deviceColor, transform: "translateY(7px)" }}
+                />
+              </AdvancedMarker>
+              <InfoWindow
+                position={{ lat: pinnedPoint.latitude, lng: pinnedPoint.longitude }}
+                pixelOffset={[0, -12]}
+                onCloseClick={() => setPinnedIdx(null)}
+              >
+                <ReadoutList readout={pinnedReadout} />
               </InfoWindow>
-            ) : null
+            </>
           )}
 
           {/* Start */}
@@ -626,8 +946,8 @@ export default function RouteHistoryMap({
               );
             })}
 
-          {/* Playback / live cursor — speed, time and battery on hover */}
-          {readoutPoint && (
+          {/* Playback / live cursor — full point readout on hover */}
+          {readoutPoint && cursorReadout && (
             <>
               <AdvancedMarker
                 position={{ lat: readoutPoint.latitude, lng: readoutPoint.longitude }}
@@ -643,12 +963,7 @@ export default function RouteHistoryMap({
                 onClick={() => setOpenInfo("cursor")}
               >
                 <div className="group relative flex items-center justify-center">
-                  <CursorHoverCard
-                    point={readoutPoint}
-                    battery={readoutBattery}
-                    idle={cursorIdle}
-                    idleElapsedMs={cursorIdleElapsedMs}
-                  />
+                  <MarkerHoverCard readout={cursorReadout} />
                   {cursorIdle ? (
                     <IdleGlyph size={30} />
                   ) : (
@@ -665,12 +980,7 @@ export default function RouteHistoryMap({
                   position={{ lat: readoutPoint.latitude, lng: readoutPoint.longitude }}
                   onCloseClick={() => setOpenInfo(null)}
                 >
-                  <PointDetails
-                    p={readoutPoint}
-                    battery={readoutBattery}
-                    idle={cursorIdle}
-                    idleElapsedMs={cursorIdleElapsedMs}
-                  />
+                  <ReadoutList readout={cursorReadout} />
                 </InfoWindow>
               )}
             </>
@@ -681,47 +991,11 @@ export default function RouteHistoryMap({
   );
 }
 
-function Row({ k, v }: { k: string; v: string }) {
+function Row({ k, v, tone }: { k: string; v: string; tone?: Tone }) {
   return (
     <div className="flex justify-between gap-3 py-0.5">
       <span className="text-slate-500">{k}</span>
-      <span className="font-medium text-slate-800">{v}</span>
-    </div>
-  );
-}
-
-function PointDetails({
-  p,
-  battery = null,
-  idle = null,
-  idleElapsedMs = 0,
-}: {
-  p: LocationPoint;
-  battery?: number | null;
-  idle?: IdleEvent | null;
-  idleElapsedMs?: number;
-}) {
-  const level = p.batteryPercent ?? battery;
-  return (
-    <div className="min-w-[190px] font-sans text-xs">
-      <p className="mb-1.5 font-bold text-slate-900">
-        GPS point
-        {p.isMockLocation && (
-          <span className="ml-1 text-[10px] font-semibold uppercase text-rose-600">mock</span>
-        )}
-      </p>
-      <Row k="Time" v={fmtTime(p.recordedAt)} />
-      <Row k="Speed" v={`${speedKmh(p).toFixed(1)} km/h`} />
-      {level != null && <Row k="Battery" v={`${level}%`} />}
-      {idle && (
-        <Row
-          k="Idle"
-          v={`${formatDurationPrecise(idleElapsedMs)} of ${formatDurationPrecise(idle.durationMs)}`}
-        />
-      )}
-      {p.accuracyMeters != null && <Row k="Accuracy" v={`±${p.accuracyMeters.toFixed(0)} m`} />}
-      {p.bearingDegrees != null && <Row k="Bearing" v={`${p.bearingDegrees.toFixed(0)}°`} />}
-      <Row k="Coords" v={`${p.latitude.toFixed(5)}, ${p.longitude.toFixed(5)}`} />
+      <span className={`font-medium ${tone ? LIGHT_TONE[tone] : "text-slate-800"}`}>{v}</span>
     </div>
   );
 }

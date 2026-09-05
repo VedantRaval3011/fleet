@@ -43,5 +43,10 @@ const LocationPointSchema = new Schema(
   { timestamps: false, collection: 'locationpoints' }
 );
 
+// A route is replayed in sequence order for one session; the fleet map reads
+// the newest points per device.
+LocationPointSchema.index({ sessionId: 1, sequenceNumber: 1 });
+LocationPointSchema.index({ deviceId: 1, recordedAt: -1 });
+
 export default mongoose.models.LocationPoint ||
   mongoose.model<ILocationPoint>('LocationPoint', LocationPointSchema);

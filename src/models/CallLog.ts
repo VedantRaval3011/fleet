@@ -30,4 +30,12 @@ const CallLogSchema = new Schema(
 // Compound index to prevent duplicates
 CallLogSchema.index({ phoneNumber: 1, timestamp: 1, duration: 1 }, { unique: true });
 
+// Read-path indexes. Every dashboard query matches on company + time window,
+// and the analytics aggregations additionally group by employee or call type.
+CallLogSchema.index({ companyId: 1, timestamp: -1 });
+CallLogSchema.index({ employeeName: 1, timestamp: -1 });
+CallLogSchema.index({ companyId: 1, callType: 1, timestamp: -1 });
+CallLogSchema.index({ timestamp: -1 });
+CallLogSchema.index({ syncedAt: -1 });
+
 export default mongoose.models.CallLog || mongoose.model<ICallLog>('CallLog', CallLogSchema);

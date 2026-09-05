@@ -25,4 +25,8 @@ const VehicleSchema = new Schema(
   { timestamps: true, collection: 'vehicles' }
 );
 
+// Vehicle lists are always company-scoped; registration must be unique per company.
+VehicleSchema.index({ companyId: 1, registration: 1 }, { unique: true });
+VehicleSchema.index({ companyId: 1, status: 1 });
+
 export default models.Vehicle || model<IVehicle>('Vehicle', VehicleSchema);

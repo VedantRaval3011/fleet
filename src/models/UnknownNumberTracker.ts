@@ -5,6 +5,10 @@ export type TrackerStatus = 'tracking' | 'awaiting_name' | 'awaiting_category' |
 export interface IUnknownNumberTracker extends Document {
   phoneNumber: string;
   employeeName: string;
+  /** Canonical identity — last 10 digits. The real key; phoneNumber is for display. */
+  phoneKey: string;
+  /** Canonical identity — lowercased employee name. */
+  employeeKey: string;
   deviceId: string;
   callCount: number;
   firstSeen: Date;
@@ -12,6 +16,8 @@ export interface IUnknownNumberTracker extends Document {
   telegramMessageId?: number;
   /** Set when a name-request Telegram was successfully sent — prevents duplicate sends. */
   nameRequestSentAt?: Date;
+  /** How many name prompts we have sent — capped so we never nag forever. */
+  namePromptCount: number;
   status: TrackerStatus;
 }
 
@@ -19,12 +25,15 @@ const UnknownNumberTrackerSchema = new Schema(
   {
     phoneNumber: { type: String, required: true, trim: true },
     employeeName: { type: String, required: true },
+    phoneKey: { type: String, required: true, index: true },
+    employeeKey: { type: String, required: true, index: true },
     deviceId: { type: String, default: '' },
     callCount: { type: Number, default: 1 },
     firstSeen: { type: Date, required: true },
     lastSeen: { type: Date, required: true },
-    telegramMessageId: { type: Number },
+    telegramMessageId: { type: Number, index: true },
     nameRequestSentAt: { type: Date },
+    namePromptCount: { type: Number, default: 0 },
     status: {
       type: String,
       enum: ['tracking', 'awaiting_name', 'awaiting_category', 'identified'],
@@ -34,8 +43,8 @@ const UnknownNumberTrackerSchema = new Schema(
   { timestamps: true }
 );
 
-// One tracker per (phone number, employee) pair
-UnknownNumberTrackerSchema.index({ phoneNumber: 1, employeeName: 1 }, { unique: true });
+// One tracker per (number, employee) regardless of how the number was formatted.
+UnknownNumberTrackerSchema.index({ phoneKey: 1, employeeKey: 1 }, { unique: true });
 UnknownNumberTrackerSchema.index({ employeeName: 1 });
 UnknownNumberTrackerSchema.index({ callCount: -1 });
 

@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import connectToDatabase from "@/lib/db";
-import IdentifiedContact from "@/models/IdentifiedContact";
 import UnknownNumberTracker from "@/models/UnknownNumberTracker";
+import { saveScenarioBName } from "@/lib/contactIntelligence";
+import { phoneKey, employeeKey } from "@/lib/contactKey";
 import { sendInlineKeyboard, categoryKeyboard } from "@/lib/telegram";
 
 /**
@@ -9,7 +10,8 @@ import { sendInlineKeyboard, categoryKeyboard } from "@/lib/telegram";
  *
  * Called from the Scenario B Web App (Enter name form).
  * Body: { contactName, phoneNumber, employeeName, chatId }
- * Updates IdentifiedContact + tracker and sends the category keyboard to the chat.
+ * Stores the name against the canonical (phoneKey, employeeKey) record, moves the
+ * tracker to awaiting_category and sends the category keyboard to the chat.
  */
 export async function POST(req: Request) {
   try {
@@ -24,41 +26,48 @@ export async function POST(req: Request) {
 
     await connectToDatabase();
 
-    const tracker = await UnknownNumberTracker.findOne({
-      phoneNumber,
-      employeeName,
-      status: "awaiting_name",
-    });
+    const key = { phoneKey: phoneKey(phoneNumber), employeeKey: employeeKey(employeeName) };
+
+    const tracker = await UnknownNumberTracker.findOne(key);
     if (!tracker) {
       return NextResponse.json(
-        { error: "No pending name request for this contact, or already submitted." },
+        { error: "No pending name request for this contact." },
         { status: 400 }
       );
     }
 
-    await IdentifiedContact.findOneAndUpdate(
-      { phoneNumber, employeeName },
-      {
-        $set: {
-          contactName: contactName.trim(),
-          telegramChatId: String(chatId),
-          deviceId: tracker.deviceId ?? "",
-        },
-        $setOnInsert: { phoneNumber, employeeName },
-      },
-      { upsert: true, new: true }
-    );
+    // Idempotent: a double submit (double tap, form retry) must not send a second
+    // category keyboard. Only 'awaiting_name' is a valid starting point.
+    if (tracker.status !== "awaiting_name") {
+      return NextResponse.json(
+        { success: true, alreadySubmitted: true, status: tracker.status },
+        { status: 200 }
+      );
+    }
 
-    tracker.status = "awaiting_category";
-    await tracker.save();
+    // Prefer the number exactly as we already display it for this contact.
+    const displayNumber = tracker.phoneNumber || phoneNumber;
+
+    await saveScenarioBName({
+      key,
+      contactName,
+      phoneNumber: displayNumber,
+      employeeName: tracker.employeeName || employeeName,
+      chatId: String(chatId),
+      deviceId: tracker.deviceId ?? "",
+    });
 
     const categoryText =
       `✅ <b>Name saved!</b>\n\n` +
       `Name: <b>${contactName.trim()}</b>\n` +
-      `Number: <code>${phoneNumber}</code>\n\n` +
+      `Number: <code>${displayNumber}</code>\n\n` +
       `Please select the category:`;
 
-    await sendInlineKeyboard(chatId, categoryText, categoryKeyboard(phoneNumber, employeeName));
+    await sendInlineKeyboard(
+      chatId,
+      categoryText,
+      categoryKeyboard(displayNumber, tracker.employeeName || employeeName)
+    );
 
     return NextResponse.json({ success: true });
   } catch (err) {
