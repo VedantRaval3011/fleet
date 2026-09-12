@@ -4,6 +4,7 @@ import { authOptions } from "@/lib/auth";
 import connectToDatabase from "@/lib/db";
 import IdentifiedContact from "@/models/IdentifiedContact";
 import { normalizePhoneNumber } from "@/lib/phone";
+import { phoneKey, employeeKey } from "@/lib/contactKey";
 
 /**
  * PATCH /api/contact-intelligence/update
@@ -40,9 +41,17 @@ export async function PATCH(req: Request) {
     return NextResponse.json({ error: "Nothing to update" }, { status: 400 });
   }
 
+  // Key on the canonical identity, not the raw string: the stored record may hold
+  // any format of this number ("+91…", "0…"), and an upsert keyed on the raw value
+  // would create a second record for the same contact.
+  const key = { phoneKey: phoneKey(normalized), employeeKey: employeeKey(employeeName) };
+
   const result = await IdentifiedContact.findOneAndUpdate(
-    { phoneNumber: normalized, employeeName: String(employeeName) },
-    { $set: update },
+    key,
+    {
+      $set: update,
+      $setOnInsert: { ...key, phoneNumber: normalized, employeeName: String(employeeName) },
+    },
     { new: true, upsert: true, setDefaultsOnInsert: true }
   );
 

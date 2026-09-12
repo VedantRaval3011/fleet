@@ -35,5 +35,10 @@ const LocationSessionSchema = new Schema(
   { timestamps: false, collection: 'locationsessions' }
 );
 
+// Trip/route history pages page through sessions by device and start time.
+LocationSessionSchema.index({ companyId: 1, startedAt: -1 });
+LocationSessionSchema.index({ deviceId: 1, startedAt: -1 });
+LocationSessionSchema.index({ status: 1, startedAt: -1 });
+
 export default mongoose.models.LocationSession ||
   mongoose.model<ILocationSession>('LocationSession', LocationSessionSchema);

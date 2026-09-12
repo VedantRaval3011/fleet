@@ -37,4 +37,9 @@ const ToggleLogSchema = new Schema(
   { timestamps: true }
 );
 
+// The App Active Status page reads the newest entries, optionally per device.
+ToggleLogSchema.index({ timestamp: -1 });
+ToggleLogSchema.index({ deviceId: 1, timestamp: -1 });
+ToggleLogSchema.index({ employeeName: 1, timestamp: -1 });
+
 export default mongoose.models.ToggleLog || mongoose.model<IToggleLog>('ToggleLog', ToggleLogSchema);

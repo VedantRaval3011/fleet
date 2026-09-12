@@ -23,4 +23,8 @@ const WalletTransactionSchema = new Schema(
   { timestamps: true }
 );
 
+// Wallet history is read per driver, newest first.
+WalletTransactionSchema.index({ driverId: 1, timestamp: -1 });
+WalletTransactionSchema.index({ companyId: 1, timestamp: -1 });
+
 export default mongoose.models.WalletTransaction || mongoose.model<IWalletTransaction>('WalletTransaction', WalletTransactionSchema);

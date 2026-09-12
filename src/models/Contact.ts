@@ -5,6 +5,11 @@ export interface IContact extends Document {
   employeeName: string;
   contactName: string;
   phoneNumber: string;
+  /**
+   * Canonical identity — last 10 digits. Lets the bot decide "is this number saved
+   * in the employee's phone?" regardless of the format the device reported.
+   */
+  phoneKey: string;
   timestamp: Date;
   syncedAt: Date;
 }
@@ -15,6 +20,7 @@ const ContactSchema = new Schema(
     employeeName: { type: String, default: 'Unknown' },
     contactName: { type: String, required: true },
     phoneNumber: { type: String, required: true },
+    phoneKey: { type: String, default: '', index: true },
     timestamp: { type: Date, required: true },
     syncedAt: { type: Date, default: Date.now },
   },
@@ -22,6 +28,10 @@ const ContactSchema = new Schema(
 );
 
 ContactSchema.index({ deviceId: 1, phoneNumber: 1 }, { unique: true });
+ContactSchema.index({ phoneKey: 1, employeeName: 1 });
 ContactSchema.index({ employeeName: 1 });
+
+// The contact bank lists company contacts sorted by employee then contact name.
+ContactSchema.index({ employeeName: 1, contactName: 1 });
 
 export default mongoose.models.Contact || mongoose.model<IContact>('Contact', ContactSchema);

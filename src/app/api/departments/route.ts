@@ -17,7 +17,11 @@ export async function GET() {
 
     const query: any = {};
     if (session.user.role !== "super_admin") {
-      query.companyId = new mongoose.Types.ObjectId(session.user.companyId!);
+      query.$or = [
+        { companyId: new mongoose.Types.ObjectId(session.user.companyId!) },
+        // Unscoped departments (created by a super_admin) are shared by everyone.
+        { companyId: null },
+      ];
     }
 
     const departments = await Department.find(query).sort({ name: 1 }).lean();
@@ -44,15 +48,20 @@ export async function POST(req: Request) {
 
     await connectToDatabase();
 
-    const companyId =
-      session.user.role === "super_admin" ? body.companyId : session.user.companyId;
-    if (!companyId) {
+    // A super_admin is not tied to a company. They may name one explicitly,
+    // otherwise the department is created unscoped and shared across companies.
+    const isSuperAdmin = session.user.role === "super_admin";
+    const companyId = String((isSuperAdmin ? body.companyId : session.user.companyId) ?? "").trim();
+    if (!companyId && !isSuperAdmin) {
       return NextResponse.json({ error: "Company is required" }, { status: 400 });
+    }
+    if (companyId && !mongoose.Types.ObjectId.isValid(companyId)) {
+      return NextResponse.json({ error: "Invalid company" }, { status: 400 });
     }
 
     const created = await Department.create({
       name: trimmed,
-      companyId: new mongoose.Types.ObjectId(companyId),
+      ...(companyId ? { companyId: new mongoose.Types.ObjectId(companyId) } : {}),
     });
 
     return NextResponse.json(created.toObject(), { status: 201 });

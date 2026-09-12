@@ -9,6 +9,7 @@ import UnknownNumberTracker from "@/models/UnknownNumberTracker";
 import EmployeeTelegram from "@/models/EmployeeTelegram";
 import IntelligenceCheckpoint from "@/models/IntelligenceCheckpoint";
 import { runContactIntelligence } from "@/lib/contactIntelligence";
+import { phoneKey, employeeKey } from "@/lib/contactKey";
 
 export const maxDuration = 60;
 
@@ -72,20 +73,24 @@ export async function GET(req: Request) {
       (a: any, b: any) => (new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())
     );
 
-    // Dedupe by (phoneNumber, employeeName) so one call in both DeviceCallLog and CallLog doesn't trigger two messages
+    // Dedupe on the canonical (phoneKey, employeeKey) so the same number in two
+    // formats — or one call present in both DeviceCallLog and CallLog — cannot
+    // trigger two messages.
     const seenKey = new Set<string>();
     for (const call of newCalls) {
       const { phoneNumber, contactName, employeeName, deviceId } = call as any;
       if (!phoneNumber || !employeeName) continue;
-      const key = `${phoneNumber}|${employeeName}`;
-      if (seenKey.has(key)) continue;
-      seenKey.add(key);
+      const recordKey = { phoneKey: phoneKey(phoneNumber), employeeKey: employeeKey(employeeName) };
+      if (!recordKey.phoneKey || !recordKey.employeeKey) continue;
+      const dedupe = `${recordKey.phoneKey}|${recordKey.employeeKey}`;
+      if (seenKey.has(dedupe)) continue;
+      seenKey.add(dedupe);
 
-      const identified = await IdentifiedContact.findOne({ phoneNumber, employeeName });
+      const identified = await IdentifiedContact.findOne(recordKey);
       if (identified?.category && identified?.contactName) continue;
 
-      const tracker = await UnknownNumberTracker.findOne({ phoneNumber, employeeName });
-      if (tracker && (tracker.status === "awaiting_name" || tracker.status === "awaiting_category")) continue;
+      const tracker = await UnknownNumberTracker.findOne(recordKey);
+      if (tracker && tracker.status === "awaiting_name") continue;
 
       const resolvedName =
         contactName && contactName !== "Unknown" && contactName !== "" ? contactName : undefined;
@@ -125,11 +130,15 @@ export async function GET(req: Request) {
         }
       }
 
-      // 2b. Scenario B retries: trackers at threshold in 'tracking', or 'awaiting_name' but message never sent (no telegramMessageId)
+      // 2b. Scenario B retries: trackers at threshold in 'tracking', 'awaiting_category'
+      // (name given but category never chosen), or 'awaiting_name' where the message
+      // never actually sent. The engine's atomic claims and prompt caps decide whether
+      // anything is really sent.
       const pendingB = await UnknownNumberTracker.find({
         employeeName: { $in: Array.from(linkedNames) },
         $or: [
           { status: "tracking", callCount: { $gte: 5 } },
+          { status: "awaiting_category" },
           { status: "awaiting_name", telegramMessageId: null, nameRequestSentAt: null },
         ],
       }).lean();

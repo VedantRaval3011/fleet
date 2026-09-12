@@ -13,16 +13,26 @@ export type LatLng = google.maps.LatLngLiteral;
 export function Polyline({
   path,
   onClick,
+  onMouseMove,
+  onMouseOut,
   ...options
 }: {
   path: LatLng[];
-  onClick?: () => void;
+  onClick?: (e: google.maps.PolyMouseEvent) => void;
+  onMouseMove?: (e: google.maps.PolyMouseEvent) => void;
+  onMouseOut?: () => void;
 } & google.maps.PolylineOptions) {
   const map = useMap();
   const mapsLib = useMapsLibrary("maps");
   const lineRef = useRef<google.maps.Polyline | null>(null);
+  // Handlers are held in refs so a new closure each render does not tear down
+  // and rebuild the overlay — the listeners are attached once, on creation.
   const clickRef = useRef(onClick);
   clickRef.current = onClick;
+  const moveRef = useRef(onMouseMove);
+  moveRef.current = onMouseMove;
+  const outRef = useRef(onMouseOut);
+  outRef.current = onMouseOut;
 
   // Serialize so a new array identity on every poll does not rebuild the path.
   const pathKey = useMemo(
@@ -36,9 +46,15 @@ export function Polyline({
     const line = new mapsLib.Polyline();
     line.setMap(map);
     lineRef.current = line;
-    const listener = line.addListener("click", () => clickRef.current?.());
+    const listeners = [
+      line.addListener("click", (e: google.maps.PolyMouseEvent) => clickRef.current?.(e)),
+      line.addListener("mousemove", (e: google.maps.PolyMouseEvent) =>
+        moveRef.current?.(e)
+      ),
+      line.addListener("mouseout", () => outRef.current?.()),
+    ];
     return () => {
-      listener.remove();
+      listeners.forEach((l) => l.remove());
       line.setMap(null);
       lineRef.current = null;
     };
@@ -47,7 +63,8 @@ export function Polyline({
   useEffect(() => {
     const line = lineRef.current;
     if (!line) return;
-    line.setOptions({ ...options, path, clickable: !!clickRef.current });
+    const interactive = !!(clickRef.current || moveRef.current || outRef.current);
+    line.setOptions({ ...options, path, clickable: interactive });
     // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed by serialized path/options
   }, [pathKey, optionsKey, mapsLib, map]);
 

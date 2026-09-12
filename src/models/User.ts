@@ -24,4 +24,8 @@ const UserSchema = new Schema(
   { timestamps: true }
 );
 
+// User management lists are company-scoped and often filtered by role.
+UserSchema.index({ companyId: 1, role: 1 });
+UserSchema.index({ departmentId: 1 });
+
 export default mongoose.models.User || mongoose.model<IUser>('User', UserSchema);

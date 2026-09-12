@@ -33,8 +33,16 @@ export async function GET() {
     updatedAt?: Date;
   }>;
 
+  // A device can have more than one non-revoked enrollment doc (re-enrolling does
+  // not replace the earlier one), so keep only the most recent row per deviceId.
+  const byDeviceId = new Map<string, (typeof rows)[number]>();
+  for (const device of rows) {
+    if (!device.deviceId || byDeviceId.has(device.deviceId)) continue;
+    byDeviceId.set(device.deviceId, device);
+  }
+
   return NextResponse.json(
-    rows.map((device) => ({
+    Array.from(byDeviceId.values()).map((device) => ({
       deviceId: device.deviceId,
       employeeName: device.employeeName,
       employeeId: device.employeeId,

@@ -41,4 +41,9 @@ const ExpenseSchema = new Schema(
   { timestamps: true }
 );
 
+// Read-path indexes for the expenses table and the dashboard daily totals.
+ExpenseSchema.index({ companyId: 1, timestamp: -1 });
+ExpenseSchema.index({ companyId: 1, status: 1, timestamp: -1 });
+ExpenseSchema.index({ driverId: 1, timestamp: -1 });
+
 export default mongoose.models.Expense || mongoose.model<IExpense>('Expense', ExpenseSchema);

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import connectToDatabase from "@/lib/db";
 import Contact from "@/models/Contact";
+import { phoneKey } from "@/lib/contactKey";
 
 
 export async function POST(req: Request) {
@@ -30,8 +31,11 @@ export async function POST(req: Request) {
           deviceId: contact.deviceId, 
           phoneNumber: contact.phoneNumber 
         },
-        update: { 
+        update: {
           $set: {
+            // Canonical key so the bot can tell whether a number is already saved in
+            // this phone regardless of the format it was stored or reported in.
+            phoneKey: phoneKey(contact.phoneNumber),
             employeeName: contact.employeeName || "Unknown",
             contactName: contact.contactName || "Unknown",
             timestamp: contact.timestamp ? new Date(Number(contact.timestamp)) : new Date(),
