@@ -22,6 +22,7 @@ import {
   nearestPointIndex,
   violationAt,
   VIOLATION_COLOR,
+  IDLE_COLOR,
 } from "@/lib/routeAnalytics";
 
 export type LocationPoint = RoutePoint;
@@ -199,7 +200,7 @@ function IdleGlyph({ size = 32 }: { size?: number }) {
         width: size,
         height: size,
         borderRadius: "50%",
-        background: "#3b82f6",
+        background: IDLE_COLOR,
         border: "3px solid #fff",
         boxShadow: "0 1px 6px rgba(0,0,0,.45)",
         display: "flex",
@@ -860,7 +861,7 @@ export default function RouteHistoryMap({
                   title={`Idle ${formatDuration(e.durationMs)}`}
                   onClick={() => setOpenInfo(`idle:${e.id}`)}
                 >
-                  <PinGlyph color="#3b82f6" glyph="⏸" size={24} />
+                  <PinGlyph color={IDLE_COLOR} glyph="⏸" size={26} />
                 </AdvancedMarker>
                 {openInfo === `idle:${e.id}` && (
                   <InfoWindow
@@ -868,7 +869,7 @@ export default function RouteHistoryMap({
                     onCloseClick={() => setOpenInfo(null)}
                   >
                     <div className="min-w-[180px] font-sans text-xs">
-                      <p className="mb-1 font-bold text-blue-700">Idle / Stopped</p>
+                      <p className="mb-1 font-bold text-purple-700">Idle / Stopped</p>
                       <Row k="Duration" v={`Idle for ${formatDurationPrecise(e.durationMs)}`} />
                       {batteryAt(points, e.startIdx) != null && (
                         <Row k="Battery" v={`${batteryAt(points, e.startIdx)}%`} />
