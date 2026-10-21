@@ -9,6 +9,8 @@ export interface IUserCapabilities {
   callMonitoring: boolean;
   locationTracking: boolean;
   expenseManagement: boolean;
+  /** Works scheduled shifts (morning/evening, audited). Absent on older records: follows locationTracking. */
+  shifts: boolean;
 }
 
 export interface IUser extends Document {
@@ -38,6 +40,7 @@ const UserSchema = new Schema(
       callMonitoring: { type: Boolean, default: false },
       locationTracking: { type: Boolean, default: false },
       expenseManagement: { type: Boolean, default: false },
+      shifts: { type: Boolean, default: false },
     },
   },
   { timestamps: true }

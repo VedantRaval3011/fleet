@@ -24,6 +24,8 @@ function normalizeCapabilities(raw: unknown) {
       callMonitoring: Boolean(o.callMonitoring),
       locationTracking: Boolean(o.locationTracking),
       expenseManagement: Boolean(o.expenseManagement),
+      // Older clients don't send `shifts`; scheduled shifts used to ride on locationTracking.
+      shifts: o.shifts === undefined ? Boolean(o.locationTracking) : Boolean(o.shifts),
     };
   }
   // Legacy comma-string / string[] from older UI
@@ -38,6 +40,7 @@ function normalizeCapabilities(raw: unknown) {
       lower.some((s) => s.includes("call")) || lower.length === 0,
     locationTracking: lower.some((s) => s.includes("location") || s.includes("gps")),
     expenseManagement: lower.some((s) => s.includes("expense")),
+    shifts: lower.some((s) => s.includes("shift")) || lower.some((s) => s.includes("location") || s.includes("gps")),
   };
 }
 
@@ -89,8 +92,24 @@ export async function GET() {
     const codes = await EnrollmentCode.find(query)
       .sort({ createdAt: -1 })
       .limit(200)
-      .populate("departmentId", "name");
-    return NextResponse.json(codes);
+      .populate("departmentId", "name")
+      .lean();
+
+    // Attach the linked sign-in username (code -> Driver -> User), so the edit
+    // dialog can show and change the person's login. Username only, never the hash.
+    const driverIds = codes.map((c) => c.driverId).filter(Boolean);
+    const usernameByDriver = new Map<string, string>();
+    if (driverIds.length) {
+      const drivers = await Driver.find({ _id: { $in: driverIds } }).select("userId").lean();
+      const users = await User.find({ _id: { $in: drivers.map((d) => d.userId) } })
+        .select("username")
+        .lean();
+      const usernameByUser = new Map(users.map((u) => [String(u._id), u.username ?? ""]));
+      for (const d of drivers) usernameByDriver.set(String(d._id), usernameByUser.get(String(d.userId)) ?? "");
+    }
+    return NextResponse.json(
+      codes.map((c) => ({ ...c, loginUsername: c.driverId ? (usernameByDriver.get(String(c.driverId)) ?? "") : "" }))
+    );
   } catch (error) {
     console.error("GET /api/enrollment-codes error:", error);
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
@@ -240,6 +259,160 @@ export async function POST(req: Request) {
     return NextResponse.json(enrollmentCode, { status: 201 });
   } catch (error) {
     console.error("POST /api/enrollment-codes error:", error);
+    return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
+  }
+}
+
+/**
+ * PUT /api/enrollment-codes  { id, ...fields }
+ *
+ * Edits an existing code: employee, type, department, vehicle, access
+ * (capabilities), device setup status, expiry and revoked state.
+ *
+ * Access is synced to the person's sign-in account when the code has one, because
+ * that account is what the phone checks at sign-in — editing the code alone would
+ * show "Expenses" on this page while the app still refuses. A username/password
+ * sent for a code that has no account yet creates one, like POST does. The phone
+ * picks changes up at its next sign-in.
+ */
+export async function PUT(req: Request) {
+  try {
+    const session = await getServerSession(authOptions);
+    if (!session?.user?.companyId && session?.user?.role !== "super_admin") {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+    if (session.user.role !== "admin" && session.user.role !== "super_admin") {
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    }
+
+    const body = await req.json();
+    const { id, employeeId, employeeName, role, departmentId, capabilities, vehicle, deviceSetupStatus, username, password } = body;
+
+    if (typeof id !== "string" || !mongoose.isValidObjectId(id)) {
+      return NextResponse.json({ error: "A valid enrollment code id is required" }, { status: 400 });
+    }
+    if (typeof employeeName !== "string" || !employeeName.trim()) {
+      return NextResponse.json({ error: "Employee name is required" }, { status: 400 });
+    }
+
+    const loginUsername = typeof username === "string" ? username.trim() : "";
+    const loginPassword = typeof password === "string" ? password : "";
+    if (loginPassword && !loginUsername) {
+      return NextResponse.json({ error: "Username is required to set a password" }, { status: 400 });
+    }
+    if (loginPassword && loginPassword.length < 6) {
+      return NextResponse.json({ error: "Password must be at least 6 characters" }, { status: 400 });
+    }
+
+    await connectToDatabase();
+
+    const query: Record<string, unknown> = { _id: id };
+    if (session.user.role !== "super_admin") {
+      query.companyId = new mongoose.Types.ObjectId(session.user.companyId!);
+    }
+    const code = await EnrollmentCode.findOne(query);
+    if (!code) {
+      return NextResponse.json({ error: "Enrollment code not found" }, { status: 404 });
+    }
+
+    const companyId = code.companyId as mongoose.Types.ObjectId;
+    const caps = normalizeCapabilities(capabilities);
+
+    let departmentObjId: mongoose.Types.ObjectId | undefined;
+    if (typeof departmentId === "string" && departmentId.trim()) {
+      const department = await Department.findOne({ _id: departmentId, companyId });
+      if (!department) {
+        return NextResponse.json({ error: "Department not found" }, { status: 400 });
+      }
+      departmentObjId = department._id;
+    }
+
+    let expiresAt: Date | undefined;
+    let clearExpiry = false;
+    if ("expiresAt" in body) {
+      if (body.expiresAt === null || body.expiresAt === "") {
+        clearExpiry = true;
+      } else {
+        const parsed = new Date(body.expiresAt);
+        if (Number.isNaN(parsed.getTime())) {
+          return NextResponse.json({ error: "Invalid expiry date" }, { status: 400 });
+        }
+        expiresAt = parsed;
+      }
+    }
+
+    // Linked sign-in account (code -> Driver -> User), if this person has one.
+    let linkedUser = null;
+    if (code.driverId) {
+      const driver = await Driver.findById(code.driverId).select("userId").lean();
+      if (driver) linkedUser = await User.findById(driver.userId);
+    }
+
+    let newDriverId: mongoose.Types.ObjectId | undefined;
+    if (linkedUser) {
+      if (loginUsername && loginUsername !== linkedUser.username) {
+        const taken = await User.findOne({ username: loginUsername, _id: { $ne: linkedUser._id } });
+        if (taken) {
+          return NextResponse.json({ error: "Username is already taken" }, { status: 400 });
+        }
+        linkedUser.username = loginUsername;
+      }
+      if (loginPassword) linkedUser.passwordHash = await bcrypt.hash(loginPassword, 10);
+      linkedUser.name = employeeName.trim();
+      linkedUser.departmentId = departmentObjId;
+      linkedUser.capabilities = caps;
+      await linkedUser.save();
+    } else if (loginUsername || loginPassword) {
+      if (!loginUsername || !loginPassword) {
+        return NextResponse.json({ error: "Username and password are both required to create a sign-in" }, { status: 400 });
+      }
+      const existingUsername = await User.findOne({ username: loginUsername });
+      if (existingUsername) {
+        return NextResponse.json({ error: "Username is already taken" }, { status: 400 });
+      }
+      const loginEmail =
+        (typeof body.email === "string" && body.email.trim().toLowerCase()) ||
+        `${loginUsername.toLowerCase()}@driver.local`;
+      const existingEmail = await User.findOne({ email: loginEmail });
+      if (existingEmail) {
+        return NextResponse.json({ error: "Email already exists" }, { status: 400 });
+      }
+      const newUser = await User.create({
+        name: employeeName.trim(),
+        email: loginEmail,
+        username: loginUsername,
+        passwordHash: await bcrypt.hash(loginPassword, 10),
+        role: "driver",
+        companyId,
+        departmentId: departmentObjId,
+        capabilities: caps,
+      });
+      const driver = await Driver.create({ userId: newUser._id, companyId, walletBalance: 0, status: "active" });
+      newDriverId = driver._id;
+      linkedUser = newUser;
+    }
+
+    const $set: Record<string, unknown> = {
+      employeeName: employeeName.trim(),
+      employeeId: (typeof employeeId === "string" && employeeId.trim()) || code.employeeId || code.code,
+      role: role === "employee" ? "employee" : "driver",
+      departmentId: departmentObjId,
+      vehicle: normalizeVehicle(vehicle),
+      capabilities: caps,
+      deviceSetupStatus: deviceSetupStatus === "installed" ? "installed" : "pending",
+    };
+    if (typeof body.revoked === "boolean") $set.revoked = body.revoked;
+    if (expiresAt) $set.expiresAt = expiresAt;
+    if (newDriverId) $set.driverId = newDriverId;
+
+    const update: Record<string, unknown> = { $set };
+    if (clearExpiry) update.$unset = { expiresAt: "" };
+    await EnrollmentCode.updateOne({ _id: code._id }, update);
+
+    const updated = await EnrollmentCode.findById(code._id).populate("departmentId", "name").lean();
+    return NextResponse.json({ ...updated, loginUsername: linkedUser?.username ?? "" });
+  } catch (error) {
+    console.error("PUT /api/enrollment-codes error:", error);
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
   }
 }

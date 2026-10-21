@@ -149,7 +149,7 @@ async function main() {
       passwordHash,
       role: "driver",
       companyId,
-      capabilities: { callMonitoring: false, locationTracking: true, expenseManagement: true },
+      capabilities: { callMonitoring: false, locationTracking: true, expenseManagement: true, shifts: true },
     });
     const driver = await Driver.create({ userId: user._id, companyId, walletBalance: 0 });
     const deviceId = `demo-device-${p.key}`;
@@ -159,7 +159,7 @@ async function main() {
       employeeId: p.emp,
       employeeName: p.name,
       role: "driver",
-      capabilities: { callMonitoring: false, locationTracking: true, expenseManagement: true },
+      capabilities: { callMonitoring: false, locationTracking: true, expenseManagement: true, shifts: true },
       vehicle: { id: p.reg, registration: p.reg },
       driverId: driver._id,
       usedAt: new Date(now - 30 * DAY),

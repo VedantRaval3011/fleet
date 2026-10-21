@@ -4,6 +4,8 @@ export interface IEnrollmentCapabilities {
   callMonitoring: boolean;
   locationTracking: boolean;
   expenseManagement: boolean;
+  /** Works scheduled shifts. Absent on older codes: follows locationTracking. */
+  shifts: boolean;
 }
 
 export interface IEnrollmentCode extends Document {
@@ -41,6 +43,7 @@ const EnrollmentCodeSchema = new Schema(
       callMonitoring: { type: Boolean, default: true },
       locationTracking: { type: Boolean, default: false },
       expenseManagement: { type: Boolean, default: false },
+      shifts: { type: Boolean, default: false },
     },
     vehicle: {
       id: { type: String },

@@ -16,18 +16,21 @@ type Capabilities = {
   callMonitoring: boolean;
   locationTracking: boolean;
   expenseManagement: boolean;
+  shifts: boolean;
 };
 
 const DEFAULT_CAPABILITIES: Capabilities = {
   callMonitoring: true,
   locationTracking: false,
   expenseManagement: false,
+  shifts: false,
 };
 
 const CAPABILITY_LABELS: Array<{ key: keyof Capabilities; label: string; hint: string }> = [
-  { key: "callMonitoring", label: "Call monitoring", hint: "Sync call logs and contacts" },
-  { key: "locationTracking", label: "Location tracking", hint: "Record GPS routes on shift" },
+  { key: "shifts", label: "Shifts", hint: "Works scheduled shifts with GPS monitoring" },
   { key: "expenseManagement", label: "Expenses", hint: "Submit expense claims and wallet" },
+  { key: "locationTracking", label: "Location tracking", hint: "Record GPS routes on shift" },
+  { key: "callMonitoring", label: "Call monitoring", hint: "Sync call logs and contacts" },
 ];
 
 /**
@@ -173,6 +176,10 @@ export default function UsersPage() {
       callMonitoring: Boolean(user.capabilities?.callMonitoring),
       locationTracking: Boolean(user.capabilities?.locationTracking),
       expenseManagement: Boolean(user.capabilities?.expenseManagement),
+      // Users saved before `shifts` existed: shifts rode on location tracking.
+      shifts: user.capabilities?.shifts === undefined
+        ? Boolean(user.capabilities?.locationTracking)
+        : Boolean(user.capabilities.shifts),
     });
   };
 

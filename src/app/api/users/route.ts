@@ -24,12 +24,15 @@ function normalizeCapabilities(raw: unknown, role?: string) {
       callMonitoring: Boolean(o.callMonitoring),
       locationTracking: Boolean(o.locationTracking),
       expenseManagement: Boolean(o.expenseManagement),
+      // Older clients don't send `shifts`; scheduled shifts used to ride on locationTracking.
+      shifts: o.shifts === undefined ? Boolean(o.locationTracking) : Boolean(o.shifts),
     };
   }
   return {
     callMonitoring: isDevice,
     locationTracking: false,
     expenseManagement: false,
+    shifts: false,
   };
 }
 
