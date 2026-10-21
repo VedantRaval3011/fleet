@@ -1,478 +1,475 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
-import { useRouter } from "next/navigation";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Camera, MapPin, Loader2, ArrowLeft, Upload, CheckCircle2 } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { useRouter } from "next/navigation";
+import { ArrowLeft, Camera, CheckCircle2, Image as ImageIcon, Loader2, MapPin, RotateCcw, X } from "lucide-react";
+import { EXPENSE_CATEGORIES, type ExpenseCategory } from "@/lib/expenseMath";
+import { CATEGORY_STYLE, formatRupees } from "../WalletUI";
+
+type GpsState = "idle" | "warming" | "ready" | "denied" | "error";
+type Fix = { lat: number; lng: number; acc: number };
+
+interface SubmitResult {
+  id: string;
+  amount: number;
+  balance: number;
+  excessAmount: number;
+  duplicate: boolean;
+}
+
+/** Works on plain-http LAN addresses too, where crypto.randomUUID is unavailable. */
+function newRequestId(): string {
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+function todayLocal(): string {
+  const d = new Date();
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+const MAX_EDGE = 1600;
+
+/** Downscale and JPEG-encode a photo so receipts stay legible but upload fast on mobile data. */
+function compressImage(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("Could not read the photo."));
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error("That file is not a photo we can read."));
+      img.onload = () => {
+        const scale = Math.min(1, MAX_EDGE / Math.max(img.width, img.height));
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.round(img.width * scale);
+        canvas.height = Math.round(img.height * scale);
+        canvas.getContext("2d")?.drawImage(img, 0, 0, canvas.width, canvas.height);
+        let quality = 0.75;
+        let out = canvas.toDataURL("image/jpeg", quality);
+        while (out.length > 4_000_000 && quality > 0.3) {
+          quality -= 0.15;
+          out = canvas.toDataURL("image/jpeg", quality);
+        }
+        resolve(out);
+      };
+      img.src = reader.result as string;
+    };
+    reader.readAsDataURL(file);
+  });
+}
 
 export default function AddExpensePage() {
   const router = useRouter();
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const streamRef = useRef<MediaStream | null>(null);
-  const gpsWatchId = useRef<number | null>(null);
-  const bestGps = useRef<{lat: number; lng: number; acc: number} | null>(null);
-  
+  const cameraInput = useRef<HTMLInputElement>(null);
+  const galleryInput = useRef<HTMLInputElement>(null);
+  const watchId = useRef<number | null>(null);
+  const bestFix = useRef<Fix | null>(null);
+  // One id per expense being entered: every retry of this submission reuses it,
+  // so the server records (and deducts) it once however many times it arrives.
+  const requestId = useRef<string>("");
+
   const [amount, setAmount] = useState("");
-  const [category, setCategory] = useState<string>("Fuel");
-  const [note, setNote] = useState("");
-  const [photoBase64, setPhotoBase64] = useState<string | null>(null);
-  const [isCameraOpen, setIsCameraOpen] = useState(false);
-  
-  const [gpsStatus, setGpsStatus] = useState<"idle" | "warming" | "ready" | "error">("idle");
-  const [location, setLocation] = useState<{lat: number; lng: number; acc: number} | null>(null);
-  
-  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [category, setCategory] = useState<ExpenseCategory | null>(null);
+  const [description, setDescription] = useState("");
+  const [expenseDate, setExpenseDate] = useState("");
+  const [photo, setPhoto] = useState<string | null>(null);
+  const [photoBusy, setPhotoBusy] = useState(false);
+  const [balance, setBalance] = useState<number | null>(null);
+  const [gps, setGps] = useState<GpsState>("idle");
+  const [fix, setFix] = useState<Fix | null>(null);
+  const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
-  const [showPermissionDialog, setShowPermissionDialog] = useState(false);
+  const [done, setDone] = useState<SubmitResult | null>(null);
 
-  // Cleanup on unmount
-  useEffect(() => {
-    return () => {
-      if (gpsWatchId.current !== null) {
-        navigator.geolocation.clearWatch(gpsWatchId.current);
-      }
-      if (streamRef.current) {
-        streamRef.current.getTracks().forEach(track => track.stop());
-      }
-    };
-  }, []);
-
-  // Start GPS — must be called from a user gesture (tap) to trigger the browser permission prompt
-  const startGps = async () => {
+  const startGps = useCallback(() => {
     if (!navigator.geolocation) {
-      setGpsStatus("error");
-      setError("Geolocation is not supported by your browser.");
+      setGps("error");
       return;
     }
+    if (watchId.current !== null) navigator.geolocation.clearWatch(watchId.current);
+    setGps("warming");
+    watchId.current = navigator.geolocation.watchPosition(
+      (p) => {
+        const f = { lat: p.coords.latitude, lng: p.coords.longitude, acc: p.coords.accuracy };
+        if (!bestFix.current || f.acc < bestFix.current.acc) {
+          bestFix.current = f;
+          setFix(f);
+        }
+        setGps("ready");
+      },
+      (err) => setGps(err.code === err.PERMISSION_DENIED ? "denied" : bestFix.current ? "ready" : "error"),
+      { enableHighAccuracy: true, timeout: 20_000, maximumAge: 30_000 }
+    );
+  }, []);
 
-    // Pre-check: if permission is already blocked at OS/browser level, no prompt will appear.
-    // Detect this and show step-by-step instructions instead of silently failing.
-    if (navigator.permissions) {
+  useEffect(() => {
+    requestId.current = newRequestId();
+    setExpenseDate(todayLocal());
+    fetch("/api/driver/me/summary", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((s) => s && typeof s.walletBalance === "number" && setBalance(s.walletBalance))
+      .catch(() => {});
+    // Start location straight away when it is already allowed; otherwise wait for a tap.
+    navigator.permissions
+      ?.query({ name: "geolocation" })
+      .then((p) => {
+        if (p.state === "granted") startGps();
+        if (p.state === "denied") setGps("denied");
+      })
+      .catch(() => {});
+    return () => {
+      if (watchId.current !== null) navigator.geolocation.clearWatch(watchId.current);
+    };
+  }, [startGps]);
+
+  const amountNum = Number.parseFloat(amount);
+  const validAmount = Number.isFinite(amountNum) && amountNum > 0;
+  const balanceAfter = balance !== null && validAmount ? Math.round((balance - amountNum) * 100) / 100 : null;
+
+  function onAmountChange(v: string) {
+    const cleaned = v.replace(/[^\d.]/g, "");
+    if (/^\d{0,7}(\.\d{0,2})?$/.test(cleaned)) setAmount(cleaned);
+  }
+
+  async function onPhotoPicked(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    setPhotoBusy(true);
+    setError("");
+    try {
+      setPhoto(await compressImage(file));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not use that photo.");
+    } finally {
+      setPhotoBusy(false);
+    }
+  }
+
+  async function submit() {
+    if (!validAmount) return setError("Enter the amount you spent.");
+    if (!expenseDate) return setError("Choose the date of the expense.");
+    if (!photo) return setError("Take a photo of the bill or receipt.");
+    if (!bestFix.current) {
+      if (gps === "idle" || gps === "error") startGps();
+      return setError("Waiting for your location. Keep Location on and try again in a moment.");
+    }
+
+    setError("");
+    setSubmitting(true);
+    const payload = JSON.stringify({
+      amount: Math.round(amountNum * 100) / 100,
+      category,
+      description: description.trim(),
+      expenseDate,
+      photoBase64: photo,
+      latitude: bestFix.current.lat,
+      longitude: bestFix.current.lng,
+      accuracy: bestFix.current.acc,
+      clientRequestId: requestId.current,
+    });
+
+    // Retry on dropped connections and server hiccups with the same request id.
+    let lastError = "Could not submit. Check your connection and try again.";
+    for (let attempt = 0; attempt < 3; attempt++) {
       try {
-        const result = await navigator.permissions.query({ name: "geolocation" });
-        if (result.state === "denied") {
-          setGpsStatus("error");
-          setShowPermissionDialog(true);
+        const res = await fetch("/api/driver/expenses", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: payload,
+        });
+        const body = await res.json().catch(() => ({}));
+        if (res.ok) {
+          setDone(body as SubmitResult);
+          setSubmitting(false);
           return;
         }
+        lastError = body.error || `Submission failed (${res.status}).`;
+        if (res.status < 500) break;
       } catch {
-        // Permissions API unsupported — fall through and let watchPosition handle it
+        // Network failure: fall through and retry.
       }
+      await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
     }
+    setError(lastError);
+    setSubmitting(false);
+  }
 
-    // Clear any previous watch
-    if (gpsWatchId.current !== null) {
-      navigator.geolocation.clearWatch(gpsWatchId.current);
-    }
-
-    setGpsStatus("warming");
-    setError("");
-
-    gpsWatchId.current = navigator.geolocation.watchPosition(
-      (position) => {
-        const { latitude, longitude, accuracy } = position.coords;
-        if (!bestGps.current || accuracy < bestGps.current.acc) {
-          bestGps.current = { lat: latitude, lng: longitude, acc: accuracy };
-          setLocation(bestGps.current);
-        }
-        setGpsStatus("ready");
-      },
-      (geoError) => {
-        setGpsStatus("error");
-        if (geoError.code === geoError.PERMISSION_DENIED) {
-          // Permission denied during prompt or pre-blocked — show instructions dialog
-          setShowPermissionDialog(true);
-        } else if (geoError.code === geoError.TIMEOUT) {
-          setError("GPS request timed out. Please ensure you have a clear view of the sky and try again.");
-        } else {
-          setError(`Unable to fetch location (${geoError.message}). Make sure GPS is turned on.`);
-        }
-      },
-      { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
+  if (done) {
+    const negative = done.balance < 0;
+    return (
+      <div className="flex min-h-[70vh] flex-col items-center justify-center text-center">
+        <div className="relative">
+          <span className="absolute inset-0 animate-ping rounded-full bg-emerald-500/30" />
+          <CheckCircle2 className="relative h-24 w-24 text-emerald-400" strokeWidth={1.5} />
+        </div>
+        <p className="mt-6 text-sm text-slate-400">{done.duplicate ? "Already recorded" : "Expense recorded"}</p>
+        <p className="mt-1 text-5xl font-extrabold tracking-tight tabular-nums text-white">{formatRupees(done.amount)}</p>
+        <p className="mt-2 text-sm text-slate-300">
+          {[category ?? "Other", description.trim()].filter(Boolean).join(" · ")}
+        </p>
+        {done.duplicate && (
+          <p className="mt-3 max-w-xs text-xs text-amber-300">
+            This expense had already reached the server, so it was not deducted a second time.
+          </p>
+        )}
+        <div className="mt-8 w-full rounded-2xl border border-slate-800 bg-slate-900 p-4 text-sm">
+          <div className="flex justify-between">
+            <span className="text-slate-400">Wallet balance now</span>
+            <span className={`font-semibold tabular-nums ${negative ? "text-rose-400" : "text-white"}`}>
+              {formatRupees(done.balance)}
+            </span>
+          </div>
+          {done.excessAmount > 0 && (
+            <p className="mt-2 text-left text-xs text-rose-300">
+              {formatRupees(done.excessAmount)} of this was more than your balance. It is recorded as owed to you.
+            </p>
+          )}
+          <div className="mt-2 flex justify-between">
+            <span className="text-slate-400">Status</span>
+            <span className="text-amber-400">Awaiting HR approval</span>
+          </div>
+          <div className="mt-2 flex justify-between gap-4">
+            <span className="text-slate-400">Transaction ID</span>
+            <span className="truncate font-mono text-xs text-slate-300">{done.id}</span>
+          </div>
+        </div>
+        <div className="mt-6 grid w-full grid-cols-2 gap-3">
+          <Link
+            href={`/driver/transactions/${done.id}`}
+            className="rounded-xl border border-slate-700 py-3 text-sm font-semibold text-slate-200 hover:bg-slate-800"
+          >
+            View details
+          </Link>
+          <button
+            onClick={() => {
+              router.push("/driver/dashboard");
+              router.refresh();
+            }}
+            className="rounded-xl bg-emerald-600 py-3 text-sm font-semibold text-white hover:bg-emerald-500"
+          >
+            Done
+          </button>
+        </div>
+      </div>
     );
-  };
-
-  const startCamera = async () => {
-    try {
-      setIsCameraOpen(true);
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: "environment" }
-      });
-      streamRef.current = stream;
-      if (videoRef.current && videoRef.current.srcObject !== stream) {
-        videoRef.current.srcObject = stream;
-      }
-      setError("");
-    } catch (err) {
-      console.error("Camera access denied or device not found:", err);
-      setIsCameraOpen(false);
-      // Fallback to normal file input if permission denied or no camera device
-      fileInputRef.current?.click();
-    }
-  };
-
-  const stopCamera = () => {
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach(track => track.stop());
-      streamRef.current = null;
-    }
-    setIsCameraOpen(false);
-  };
-
-  const takePhoto = () => {
-    if (videoRef.current) {
-      const canvas = document.createElement("canvas");
-      canvas.width = videoRef.current.videoWidth || 800;
-      canvas.height = videoRef.current.videoHeight || 800;
-      const ctx = canvas.getContext("2d");
-      ctx?.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
-      
-      const dataUrl = canvas.toDataURL("image/jpeg", 0.6); // Compress
-      setPhotoBase64(dataUrl);
-      stopCamera();
-    }
-  };
-
-  const handleCapturePhoto = () => {
-    startCamera();
-  };
-
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    // Read and compress image
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      const img = new Image();
-      img.onload = () => {
-        // Create canvas for compression
-        const canvas = document.createElement("canvas");
-        const MAX_WIDTH = 800; // Mobile optimal
-        const MAX_HEIGHT = 800;
-        let width = img.width;
-        let height = img.height;
-
-        if (width > height) {
-          if (width > MAX_WIDTH) {
-            height *= MAX_WIDTH / width;
-            width = MAX_WIDTH;
-          }
-        } else {
-          if (height > MAX_HEIGHT) {
-            width *= MAX_HEIGHT / height;
-            height = MAX_HEIGHT;
-          }
-        }
-
-        canvas.width = width;
-        canvas.height = height;
-        const ctx = canvas.getContext("2d");
-        ctx?.drawImage(img, 0, 0, width, height);
-
-        // Export to highly compressed JPEG base64
-        const dataUrl = canvas.toDataURL("image/jpeg", 0.6);
-        setPhotoBase64(dataUrl);
-      };
-      img.src = event.target?.result as string;
-    };
-    reader.readAsDataURL(file);
-  };
-
-  const captureLocationAndSubmit = async () => {
-    if (!amount || parseFloat(amount) <= 0) return setError("Please enter a valid amount");
-    if (!photoBase64) return setError("A photo of the receipt/bill is required");
-    
-    if (!bestGps.current) {
-      return setError("GPS location not available yet. Please wait a moment and try again.");
-    }
-
-    setError("");
-    setIsSubmitting(true);
-
-    const { lat, lng, acc } = bestGps.current;
-
-    try {
-      const res = await fetch("/api/driver/expenses", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          amount: parseFloat(amount),
-          category,
-          note,
-          photoBase64,
-          latitude: lat,
-          longitude: lng,
-          accuracy: acc
-        }),
-      });
-
-      if (!res.ok) {
-        const data = await res.json();
-        throw new Error(data.error || "Failed to submit expense");
-      }
-
-      // Success!
-      router.push("/driver/dashboard");
-      router.refresh();
-
-    } catch (err: any) {
-      setError(err.message);
-      setIsSubmitting(false);
-    }
-  };
+  }
 
   return (
-    <div className="space-y-6">
-      {/* Location Permission Blocked Dialog */}
-      {showPermissionDialog && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
-          <div className="bg-slate-900 border border-slate-700 rounded-2xl p-6 w-full max-w-sm shadow-2xl space-y-4">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-full bg-rose-500/20 flex items-center justify-center shrink-0">
-                <MapPin className="w-5 h-5 text-rose-400" />
-              </div>
-              <div>
-                <h2 className="text-lg font-bold text-white">Location Blocked</h2>
-                <p className="text-xs text-slate-400">This site was previously denied</p>
-              </div>
-            </div>
-            <p className="text-slate-300 text-sm leading-relaxed">
-              Chrome has blocked this site from accessing location. To fix it:
-            </p>
-            <ol className="space-y-3 text-sm text-slate-300">
-              <li className="flex gap-2">
-                <span className="text-indigo-400 font-bold shrink-0">1.</span>
-                <span>In Chrome, tap the <span className="text-white font-semibold">⋮ menu → Settings → Site Settings → Location</span></span>
-              </li>
-              <li className="flex gap-2">
-                <span className="text-indigo-400 font-bold shrink-0">2.</span>
-                <span>Scroll down to the <span className="text-rose-400 font-semibold">Blocked</span> list and tap this site&apos;s address.</span>
-              </li>
-              <li className="flex gap-2">
-                <span className="text-indigo-400 font-bold shrink-0">3.</span>
-                <span>Tap <span className="text-white font-semibold">Location</span> and change it to <span className="text-emerald-400 font-semibold">Allow</span> or <span className="text-sky-400 font-semibold">Ask</span>.</span>
-              </li>
-              <li className="flex gap-2">
-                <span className="text-indigo-400 font-bold shrink-0">4.</span>
-                <span>Return here and tap <span className="text-white font-semibold">Try Again</span>.</span>
-              </li>
-            </ol>
-            <div className="bg-slate-800/60 rounded-lg p-3 text-xs text-slate-400 leading-relaxed">
-              💡 <span className="text-slate-300 font-medium">Shortcut:</span> Tap the <span className="text-white">🔒 lock icon</span> in the address bar → <span className="text-white">Site settings</span> → Location → Allow
-            </div>
-            <div className="flex gap-3 pt-1">
-              <Button
-                variant="outline"
-                className="flex-1 border-slate-600 text-slate-300 bg-transparent"
-                onClick={() => setShowPermissionDialog(false)}
-              >
-                Cancel
-              </Button>
-              <Button
-                className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white"
-                onClick={() => {
-                  setShowPermissionDialog(false);
-                  setGpsStatus("idle");
-                  setTimeout(() => startGps(), 300);
-                }}
-              >
-                Try Again
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
-
+    <div className="space-y-6 pb-28">
       <div className="flex items-center gap-3">
-        <Link href="/driver/dashboard" className="p-2 -ml-2 rounded-full hover:bg-slate-800 text-slate-400">
-          <ArrowLeft className="w-5 h-5" />
+        <Link href="/driver/dashboard" className="-ml-2 rounded-full p-2 text-slate-400 hover:bg-slate-800" aria-label="Back">
+          <ArrowLeft className="h-5 w-5" />
         </Link>
-        <h1 className="text-xl font-bold text-white tracking-tight">Add Expense</h1>
+        <h1 className="text-xl font-bold tracking-tight text-white">Add expense</h1>
       </div>
 
-      <div className="space-y-6">
-        {/* Photo Capture Section */}
-        <div 
-          className={`relative overflow-hidden w-full h-64 sm:h-72 rounded-2xl border-2 border-dashed flex flex-col items-center justify-center transition-all ${
-            photoBase64 ? "border-emerald-500/50 bg-slate-900" : isCameraOpen ? "border-slate-800 bg-black" : "border-slate-700 bg-slate-900/50 hover:bg-slate-800 cursor-pointer"
-          }`}
-          onClick={() => !photoBase64 && !isCameraOpen && handleCapturePhoto()}
-        >
-          {isCameraOpen ? (
-            <div className="absolute inset-0 w-full h-full bg-black z-10 flex flex-col items-center justify-center">
-              <video 
-                ref={(el) => {
-                  videoRef.current = el;
-                  if (el && streamRef.current && el.srcObject !== streamRef.current) {
-                    el.srcObject = streamRef.current;
-                  }
-                }} 
-                className="w-full h-full object-cover" 
-                autoPlay 
-                playsInline 
-                muted
-              />
-              <div className="absolute bottom-4 left-0 w-full flex justify-center gap-4 px-4 z-20">
-                <Button 
-                  variant="outline" 
-                  onClick={(e) => { e.stopPropagation(); stopCamera(); }} 
-                  className="bg-slate-900/80 border-slate-700 text-white backdrop-blur-sm"
-                >
-                  Cancel
-                </Button>
-                <Button 
-                  onClick={(e) => { e.stopPropagation(); takePhoto(); }} 
-                  className="bg-indigo-600 hover:bg-indigo-700 text-white flex-1 max-w-xs shadow-lg"
-                >
-                  <Camera className="w-5 h-5 mr-2" /> Snap Photo
-                </Button>
-              </div>
-            </div>
-          ) : photoBase64 ? (
-            <div className="w-full h-full cursor-pointer group" onClick={handleCapturePhoto}>
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={photoBase64} alt="Receipt" className="absolute inset-0 w-full h-full object-cover opacity-60 group-hover:opacity-40 transition-opacity" />
-              <div className="relative z-10 flex flex-col items-center justify-center p-4 bg-slate-950/60 rounded-xl h-full w-full">
-                <CheckCircle2 className="w-10 h-10 text-emerald-400 mb-2 shadow-sm shadow-black/50 rounded-full bg-black/50" />
-                <span className="text-sm font-bold text-emerald-100 drop-shadow-md">Photo Secured</span>
-                <span className="text-xs font-semibold text-slate-300 mt-2 bg-slate-900/80 px-3 py-1 rounded-full">Tap to retake</span>
-              </div>
-            </div>
-          ) : (
-            <>
-              <div className="w-16 h-16 rounded-full bg-slate-800 flex items-center justify-center mb-4 border border-slate-700 shadow-xl shadow-black/20 group-hover:bg-slate-700 transition-colors">
-                <Camera className="w-8 h-8 text-indigo-400" />
-              </div>
-              <p className="font-semibold text-slate-200">Take Photo of Bill</p>
-              <p className="text-xs text-slate-500 mt-1">Required</p>
-            </>
-          )}
+      {/* Amount */}
+      <div className="flex flex-col items-center pt-2">
+        <label htmlFor="amount" className="text-sm text-slate-400">
+          Amount spent
+        </label>
+        <div className="mt-2 flex items-baseline justify-center gap-1">
+          <span className={`text-4xl font-bold ${amount ? "text-white" : "text-slate-600"}`}>₹</span>
+          <input
+            id="amount"
+            inputMode="decimal"
+            autoComplete="off"
+            placeholder="0"
+            value={amount}
+            onChange={(e) => onAmountChange(e.target.value)}
+            className="bg-transparent text-center text-6xl font-extrabold tracking-tight text-white placeholder:text-slate-700 focus:outline-none"
+            style={{ width: `${Math.max(1, amount.length || 1) + 0.5}ch` }}
+          />
         </div>
-        <input 
-          type="file" 
-          accept="image/*" 
-          capture="environment" // Forces back camera on mobile
-          ref={fileInputRef} 
-          onChange={handleFileChange} 
-          className="hidden" 
-        />
+        {balance !== null && (
+          <p className="mt-3 rounded-full bg-slate-900 px-3 py-1 text-xs text-slate-400 ring-1 ring-slate-800">
+            Wallet {formatRupees(balance)}
+            {balanceAfter !== null && (
+              <>
+                {" → "}
+                <span className={balanceAfter < 0 ? "font-semibold text-rose-400" : "font-semibold text-emerald-400"}>
+                  {formatRupees(balanceAfter)}
+                </span>
+              </>
+            )}
+          </p>
+        )}
+        {balanceAfter !== null && balanceAfter < 0 && (
+          <p className="mt-2 max-w-xs text-center text-xs text-amber-300">
+            This takes your wallet below zero. You can still submit it; the extra is recorded as owed to you.
+          </p>
+        )}
+      </div>
 
-        {error && (
-          <div className="bg-rose-500/10 border border-rose-500/50 text-rose-500 text-sm rounded-lg p-3">
-            {error}
+      {/* Category */}
+      <div>
+        <p className="mb-2 px-1 text-sm font-medium text-slate-300">
+          Category <span className="font-normal text-slate-500">(optional)</span>
+        </p>
+        <div className="grid grid-cols-3 gap-2">
+          {EXPENSE_CATEGORIES.map((c) => {
+            const s = CATEGORY_STYLE[c];
+            const Icon = s.icon;
+            const active = c === category;
+            return (
+              <button
+                key={c}
+                type="button"
+                onClick={() => setCategory(active ? null : c)}
+                aria-pressed={active}
+                className={`flex flex-col items-center gap-1.5 rounded-2xl py-3 text-xs font-medium ring-1 transition-colors ${
+                  active ? "bg-indigo-500/15 text-white ring-indigo-400" : "bg-slate-900 text-slate-300 ring-slate-800 hover:bg-slate-800"
+                }`}
+              >
+                <span className={`flex h-10 w-10 items-center justify-center rounded-full ${s.tone}`}>
+                  <Icon className="h-5 w-5" />
+                </span>
+                {c}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Receipt */}
+      <div>
+        <p className="mb-2 px-1 text-sm font-medium text-slate-300">Bill or receipt photo</p>
+        {photo ? (
+          <div className="relative overflow-hidden rounded-2xl border border-emerald-500/40 bg-black">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src={photo} alt="Receipt preview" className="max-h-72 w-full object-contain" />
+            <div className="absolute right-2 top-2 flex gap-2">
+              <button
+                type="button"
+                onClick={() => cameraInput.current?.click()}
+                className="flex items-center gap-1 rounded-full bg-slate-950/80 px-3 py-1.5 text-xs font-medium text-white backdrop-blur"
+              >
+                <RotateCcw className="h-3.5 w-3.5" /> Retake
+              </button>
+              <button
+                type="button"
+                onClick={() => setPhoto(null)}
+                aria-label="Remove photo"
+                className="rounded-full bg-slate-950/80 p-1.5 text-white backdrop-blur"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="grid grid-cols-2 gap-3">
+            <button
+              type="button"
+              onClick={() => cameraInput.current?.click()}
+              disabled={photoBusy}
+              className="flex h-32 flex-col items-center justify-center gap-2 rounded-2xl border-2 border-dashed border-indigo-500/50 bg-indigo-500/5 text-indigo-200 hover:bg-indigo-500/10"
+            >
+              {photoBusy ? <Loader2 className="h-7 w-7 animate-spin" /> : <Camera className="h-7 w-7" />}
+              <span className="text-sm font-semibold">Take photo</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => galleryInput.current?.click()}
+              disabled={photoBusy}
+              className="flex h-32 flex-col items-center justify-center gap-2 rounded-2xl border-2 border-dashed border-slate-700 bg-slate-900 text-slate-300 hover:bg-slate-800"
+            >
+              <ImageIcon className="h-7 w-7" />
+              <span className="text-sm font-semibold">From gallery</span>
+            </button>
           </div>
         )}
+        <input ref={cameraInput} type="file" accept="image/*" capture="environment" onChange={onPhotoPicked} className="hidden" />
+        <input ref={galleryInput} type="file" accept="image/jpeg,image/png,image/webp" onChange={onPhotoPicked} className="hidden" />
+      </div>
 
-        <div className="space-y-4 bg-slate-900 p-5 rounded-2xl border border-slate-800">
-          <div className="space-y-2">
-            <Label className="text-slate-300">Amount (₹)</Label>
-            <Input 
-              type="number" 
-              placeholder="0.00" 
-              step="0.01"
-              value={amount}
-              onChange={e => setAmount(e.target.value)}
-              className="h-14 text-2xl font-bold bg-slate-950 border-slate-700 text-amber-400 placeholder:text-slate-600"
-            />
-          </div>
-
-          <div className="space-y-2">
-            <Label className="text-slate-300">Category</Label>
-            <Select value={category} onValueChange={setCategory}>
-              <SelectTrigger className="h-14 bg-slate-950 border-slate-700 text-slate-200 text-lg">
-                <SelectValue placeholder="Select Category" />
-              </SelectTrigger>
-              <SelectContent className="bg-slate-900 border-slate-700 text-white">
-                <SelectItem value="Fuel" className="py-3 text-base">⛽ Fuel</SelectItem>
-                <SelectItem value="Toll" className="py-3 text-base">🛣️ Toll</SelectItem>
-                <SelectItem value="Food" className="py-3 text-base">🍔 Food</SelectItem>
-                <SelectItem value="Other" className="py-3 text-base">📦 Other</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-
-          <div className="space-y-2">
-            <Label className="text-slate-300">Note (Optional)</Label>
-            <Input 
-              placeholder="e.g. Highway 401 run" 
-              value={note}
-              onChange={e => setNote(e.target.value)}
-              className="h-12 bg-slate-950 border-slate-700 text-slate-200 placeholder:text-slate-600"
-            />
-          </div>
+      {/* Details */}
+      <div className="space-y-4 rounded-2xl border border-slate-800 bg-slate-900 p-4">
+        <div className="space-y-1.5">
+          <label htmlFor="desc" className="text-sm font-medium text-slate-300">
+            What was it for? <span className="font-normal text-slate-500">(optional)</span>
+          </label>
+          <input
+            id="desc"
+            value={description}
+            maxLength={500}
+            onChange={(e) => setDescription(e.target.value)}
+            placeholder="e.g. Diesel at Shell pump, NH48"
+            className="h-12 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 text-slate-100 placeholder:text-slate-600 focus:border-indigo-400 focus:outline-none"
+          />
         </div>
+        <div className="space-y-1.5">
+          <label htmlFor="date" className="text-sm font-medium text-slate-300">
+            Date of expense
+          </label>
+          <input
+            id="date"
+            type="date"
+            value={expenseDate}
+            max={todayLocal()}
+            onChange={(e) => setExpenseDate(e.target.value)}
+            className="h-12 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 text-slate-100 [color-scheme:dark] focus:border-indigo-400 focus:outline-none"
+          />
+        </div>
+      </div>
 
-        <div 
-          className={`bg-slate-900/50 border rounded-xl p-4 flex items-start gap-3 transition-colors ${
-            gpsStatus === "idle" || gpsStatus === "error" ? "border-amber-500/50 cursor-pointer hover:bg-slate-800/50" : "border-slate-800"
+      {/* Location */}
+      <button
+        type="button"
+        onClick={() => gps !== "ready" && gps !== "warming" && startGps()}
+        className={`flex w-full items-start gap-3 rounded-2xl border p-4 text-left text-sm ${
+          gps === "ready" ? "border-slate-800 bg-slate-900" : "border-amber-500/40 bg-amber-500/5"
+        }`}
+      >
+        <MapPin
+          className={`mt-0.5 h-5 w-5 shrink-0 ${
+            gps === "ready" ? "text-emerald-400" : gps === "warming" ? "animate-pulse text-amber-400" : "text-amber-400"
           }`}
-          onClick={() => (gpsStatus === "idle" || gpsStatus === "error") && startGps()}
-        >
-          <MapPin className={`w-5 h-5 shrink-0 mt-0.5 ${
-            gpsStatus === "ready" ? (location && location.acc > 100 ? "text-amber-400" : "text-emerald-400") 
-            : gpsStatus === "error" ? "text-rose-400" 
-            : gpsStatus === "warming" ? "text-amber-400 animate-pulse" 
-            : "text-slate-400"
-          }`} />
-          <div className="text-xs leading-relaxed space-y-1">
-            {gpsStatus === "idle" ? (
-              <span className="text-sky-400 font-medium">
-                📍 Tap here to enable location tracking
-              </span>
-            ) : gpsStatus === "ready" && location ? (
-              <>
-                <span className={`font-medium ${location.acc <= 100 ? "text-emerald-400" : "text-amber-400"}`}>
-                  📍 GPS locked — accuracy: ~{Math.round(location.acc)}m
-                </span>
-                {location.acc > 100 && (
-                  <p className="text-amber-300/80 mt-1">
-                    ⚠️ Accuracy is low. Try stepping outside or away from buildings for a better GPS signal.
-                  </p>
-                )}
-              </>
-            ) : gpsStatus === "error" ? (
-              <span className="text-rose-400 font-medium">
-                ❌ Location blocked — tap here for help enabling it
-              </span>
-            ) : (
-              <span className="text-amber-400 font-medium">
-                🛰️ Acquiring GPS signal...
-              </span>
-            )}
-          </div>
-        </div>
-
-        <Button 
-          onClick={() => {
-            if (gpsStatus === "idle" || gpsStatus === "error") {
-              startGps();
-              return;
-            }
-            captureLocationAndSubmit();
-          }}
-          disabled={isSubmitting || gpsStatus === "warming"}
-          className="w-full h-16 text-lg font-bold bg-indigo-600 hover:bg-indigo-700 text-white shadow-xl shadow-indigo-900/20 rounded-xl"
-        >
-          {isSubmitting ? (
-             <><Loader2 className="mr-2 h-6 w-6 animate-spin" /> Submitting...</>
-          ) : gpsStatus === "idle" || gpsStatus === "error" ? (
-            <><MapPin className="mr-2 h-6 w-6" /> Enable Location & Submit</>
+        />
+        <span>
+          {gps === "ready" && fix ? (
+            <span className="text-slate-200">Location captured (±{Math.round(fix.acc)} m)</span>
+          ) : gps === "warming" ? (
+            <span className="text-amber-300">Getting your location…</span>
+          ) : gps === "denied" ? (
+            <span className="text-amber-200">
+              Location is blocked for this page. Tap the lock icon in the address bar → Site settings → Location → Allow, then tap
+              here.
+            </span>
           ) : (
-            <><Upload className="mr-2 h-6 w-6" /> Submit Expense</>
+            <span className="text-amber-200">Tap to add your location (required for every expense)</span>
           )}
-        </Button>
+        </span>
+      </button>
+
+      {error && (
+        <p role="alert" className="rounded-xl border border-rose-500/40 bg-rose-500/10 p-3 text-sm text-rose-300">
+          {error}
+        </p>
+      )}
+
+      <div className="fixed inset-x-0 bottom-0 z-40 border-t border-slate-800 bg-slate-950/95 p-4 backdrop-blur">
+        <div className="mx-auto max-w-md">
+          <button
+            type="button"
+            onClick={submit}
+            disabled={submitting || photoBusy}
+            className="flex h-14 w-full items-center justify-center rounded-2xl bg-emerald-600 text-lg font-bold text-white shadow-lg shadow-emerald-950/40 transition-colors hover:bg-emerald-500 disabled:opacity-60"
+          >
+            {submitting ? (
+              <>
+                <Loader2 className="mr-2 h-5 w-5 animate-spin" /> Recording…
+              </>
+            ) : validAmount ? (
+              `Record ${formatRupees(amountNum)}`
+            ) : (
+              "Record expense"
+            )}
+          </button>
+        </div>
       </div>
     </div>
   );

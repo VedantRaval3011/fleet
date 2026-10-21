@@ -8,6 +8,7 @@ import { useSidebar } from "./SidebarContext";
 import { useNavbarCount } from "./NavbarCountContext";
 import { cn } from "@/lib/utils";
 import { usePathname } from "next/navigation";
+import { TrackingAlertBell } from "./TrackingAlertBell";
 
 export function Navbar() {
   const { data: session } = useSession();
@@ -19,6 +20,7 @@ export function Navbar() {
   const [fcmWakeMsg, setFcmWakeMsg] = useState<string | null>(null);
   const pathname = usePathname();
   const restoreAttemptRef = useRef(0);
+  const canSeeTrackingAlerts = ["super_admin", "admin", "hr"].includes(session?.user?.role ?? "");
 
   const getScrollContainer = () =>
     (document.getElementById("dashboard-scroll-container") as HTMLElement | null) ??
@@ -240,6 +242,8 @@ export function Navbar() {
       </div>
 
       <div className="flex items-center gap-2 sm:gap-4">
+        {canSeeTrackingAlerts && <TrackingAlertBell />}
+
         {/* FCM Wake Controls */}
         <div className="flex items-center gap-2">
           <label className="flex items-center gap-1.5 text-xs text-slate-500 cursor-pointer select-none">

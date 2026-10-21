@@ -8,6 +8,7 @@ import CallLog from "@/models/CallLog";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Users, Navigation, CreditCard, Banknote, PhoneCall, Database } from "lucide-react";
 import Link from "next/link";
+import { redirect } from "next/navigation";
 import mongoose from "mongoose";
 
 async function getDashboardStats(companyId: string) {
@@ -43,6 +44,11 @@ async function getDashboardStats(companyId: string) {
 
 export default async function DashboardPage() {
   const session = await getServerSession(authOptions);
+
+  // HR staff work from Income & Expense; the fleet-wide overview is not their landing page.
+  if (session?.user?.role === "hr") {
+    redirect("/income-expense");
+  }
   
   // Super admin might not have a strict companyId assigned, so we handle it optionally or restrict for now.
   if (!session?.user?.companyId) {

@@ -5,7 +5,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Loader2, Activity, RefreshCw, Clock, ShieldAlert, ShieldCheck } from "lucide-react";
+import { Loader2, Activity, RefreshCw, Clock, ShieldAlert, ShieldCheck, Play, Square } from "lucide-react";
 import { format, formatDistanceToNow } from "date-fns";
 
 interface ToggleLog {
@@ -35,10 +35,38 @@ function getStatusBadge(status: string) {
       return <Badge className="bg-emerald-500/15 text-emerald-400 border-emerald-500/40 hover:bg-emerald-500/20">🟢 App ON</Badge>;
     case "OFF":
       return <Badge className="bg-rose-500/15 text-rose-400 border-rose-500/40 hover:bg-rose-500/20">🔴 App OFF</Badge>;
+    case "SHIFT_ON":
+      return (
+        <Badge className="bg-emerald-600/15 text-emerald-300 border-emerald-500/45 hover:bg-emerald-600/25">
+          <Play className="w-3 h-3 mr-1 inline" />
+          Shift started
+        </Badge>
+      );
+    case "SHIFT_OFF":
+      return (
+        <Badge className="bg-slate-500/15 text-slate-300 border-slate-500/45 hover:bg-slate-500/25">
+          <Square className="w-3 h-3 mr-1 inline" />
+          Shift ended
+        </Badge>
+      );
     case "PERMISSION_DENIED":
       return <Badge className="bg-amber-500/15 text-amber-400 border-amber-500/40 hover:bg-amber-500/20"><ShieldAlert className="w-3 h-3 mr-1 inline" />Permission Denied</Badge>;
     case "PERMISSION_RESTORED":
       return <Badge className="bg-sky-500/15 text-sky-400 border-sky-500/40 hover:bg-sky-500/20"><ShieldCheck className="w-3 h-3 mr-1 inline" />Permission Restored</Badge>;
+    case "LOCATION_DISABLED":
+      return (
+        <Badge className="bg-amber-500/15 text-amber-400 border-amber-500/40 hover:bg-amber-500/20">
+          <ShieldAlert className="w-3 h-3 mr-1 inline" />
+          Location lost
+        </Badge>
+      );
+    case "LOCATION_RESTORED":
+      return (
+        <Badge className="bg-sky-500/15 text-sky-400 border-sky-500/40 hover:bg-sky-500/20">
+          <ShieldCheck className="w-3 h-3 mr-1 inline" />
+          Location restored
+        </Badge>
+      );
     case "ADMIN_DISABLED":
       return (
         <Badge className="bg-orange-600/15 text-orange-300 border-orange-500/45 hover:bg-orange-600/25">
@@ -181,7 +209,11 @@ export default function ToggleLogsPage() {
                       ? "User turned off device admin in Android Settings — work protection is off until they re-enable it."
                       : emp.latestStatus === "ADMIN_ENABLED"
                         ? "Device admin is active again on this device."
-                        : "");
+                        : emp.latestStatus === "SHIFT_ON"
+                          ? "On shift — location history, live location and call logs are being collected."
+                          : emp.latestStatus === "SHIFT_OFF"
+                            ? "Off shift — nothing is being collected until the next shift starts."
+                            : "");
                   if (!detail) return null;
                   return <p className="text-xs text-slate-400 italic">{detail}</p>;
                 })()}

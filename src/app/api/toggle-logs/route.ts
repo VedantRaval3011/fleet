@@ -28,6 +28,11 @@ export async function POST(req: Request) {
       "PERMISSION_RESTORED",
       "ADMIN_DISABLED",
       "ADMIN_ENABLED",
+      // Shift boundaries from the device's own Shift switch.
+      "SHIFT_ON",
+      "SHIFT_OFF",
+      "LOCATION_DISABLED",
+      "LOCATION_RESTORED",
     ];
     if (!allowed.includes(normalizedStatus)) {
       return NextResponse.json({ error: "Invalid status" }, { status: 400 });

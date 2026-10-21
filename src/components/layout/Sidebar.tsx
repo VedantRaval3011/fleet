@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { LayoutDashboard, Users, Map, Navigation, CreditCard, Phone, UserCog, FileText, X, Activity, Contact, Trash2, PieChart, BrainCircuit, BotMessageSquare, ScrollText, UserCheck, Smartphone, PhoneCall, Building2, UsersRound, ChevronLeft, ChevronRight, Car, QrCode, Satellite, Database } from "lucide-react";
+import { LayoutDashboard, Users, Map, Navigation, CreditCard, Phone, UserCog, FileText, X, Activity, Contact, Trash2, PieChart, BrainCircuit, BotMessageSquare, ScrollText, UserCheck, Smartphone, PhoneCall, Building2, UsersRound, ChevronLeft, ChevronRight, Car, QrCode, Satellite, Database, Wallet, Clock, Siren } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useSidebar } from "./SidebarContext";
 import { useCallback, useEffect, useMemo, useRef, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
@@ -10,6 +10,9 @@ import { useCallback, useEffect, useMemo, useRef, type CSSProperties, type Point
 const sidebarNavItems = [
   { title: "Dashboard", href: "/", icon: LayoutDashboard },
   { title: "Drivers", href: "/drivers", icon: Users },
+  { title: "Income & Expense", href: "/income-expense", icon: Wallet },
+  { title: "Driver Shifts", href: "/shifts", icon: Clock },
+  { title: "Tracking Alerts", href: "/tracking-alerts", icon: Siren },
   { title: "Fleet GPS", href: "/fleet-map", icon: Satellite },
   { title: "Route History", href: "/trips", icon: Navigation },
   { title: "Vehicles", href: "/vehicles", icon: Car },
@@ -34,8 +37,19 @@ const sidebarNavItems = [
   { title: "Test Data", href: "/test-data", icon: Trash2 },
 ];
 
-export function Sidebar() {
+/**
+ * HR staff only see the pages they need for advances and expense approvals.
+ * This trims the menu; it is not an access boundary by itself (the income-expense
+ * API enforces its own role check).
+ */
+const HR_NAV_HREFS = ["/income-expense", "/drivers", "/expenses", "/shifts", "/tracking-alerts"];
+
+export function Sidebar({ role }: { role?: string }) {
   const pathname = usePathname();
+  const navItems = useMemo(
+    () => (role === "hr" ? sidebarNavItems.filter((i) => HR_NAV_HREFS.includes(i.href)) : sidebarNavItems),
+    [role]
+  );
   const { isOpen, close, isCollapsed, toggleCollapsed, sidebarWidth, setSidebarWidth } = useSidebar();
 
   const collapsedWidth = 72;
@@ -169,7 +183,7 @@ export function Sidebar() {
         {/* Nav links */}
         <div className="flex-1 overflow-y-auto py-4">
           <ul className="space-y-1 px-3">
-            {sidebarNavItems.map((item) => {
+            {navItems.map((item) => {
               const isActive =
                 pathname === item.href ||
                 (item.href !== "/" && pathname?.startsWith(item.href));

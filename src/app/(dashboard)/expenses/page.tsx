@@ -46,33 +46,51 @@ export default function ExpensesPage() {
     }
   };
 
+  // Approval and rejection go through the ledger service, which enforces:
+  //  - a written reason to reject,
+  //  - explicit confirmation to approve more than the driver's available balance.
+  // The full workflow (dialogs, history) lives on the Income & Expense page.
   const handleAction = async (expenseId: string, status: "approved" | "rejected") => {
-    setProcessingId(expenseId);
-    try {
-      const res = await fetch("/api/expenses", {
+    let reason: string | undefined;
+    if (status === "rejected") {
+      const entered = window.prompt("Reason for rejection (required, the driver will see it):");
+      if (entered === null) return;
+      if (entered.trim().length < 3) {
+        window.alert("Please enter a reason of at least 3 characters.");
+        return;
+      }
+      reason = entered.trim();
+    }
+
+    const send = (confirmExcess: boolean) =>
+      fetch("/api/expenses", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ expenseId, status })
+        body: JSON.stringify({ expenseId, status, reason, confirmExcess })
       });
-      if (res.ok) {
-        setExpenses(expenses.map(e => {
-          if (e._id === expenseId) {
-            // Optimistically update wallet balance if approved
-            const updatedBalance = status === "approved" 
-              ? (e.driverId?.walletBalance || 0) - e.amount 
-              : e.driverId?.walletBalance;
-              
-            return {
-              ...e,
-              status,
-              driverId: { ...e.driverId, walletBalance: updatedBalance }
-            };
-          }
-          return e;
-        }));
+
+    setProcessingId(expenseId);
+    try {
+      let res = await send(false);
+      let body = await res.json().catch(() => ({}));
+
+      if (res.status === 409 && body.code === "EXCESS_CONFIRMATION_REQUIRED") {
+        const excess = Number(body.details?.excessAmount ?? 0).toFixed(2);
+        const ok = window.confirm(
+          `This expense exceeds the driver's available balance by ₹${excess}.\n\n` +
+          `Approving it records ₹${excess} as an outstanding amount payable to the driver. Approve anyway?`
+        );
+        if (!ok) return;
+        res = await send(true);
+        body = await res.json().catch(() => ({}));
       }
+
+      if (!res.ok) window.alert(body.error || "Could not update the expense.");
+      // Reload so statuses and balances reflect what the server actually recorded.
+      await fetchExpenses();
     } catch (error) {
       console.error(error);
+      window.alert("Network error. Please try again.");
     } finally {
       setProcessingId(null);
     }

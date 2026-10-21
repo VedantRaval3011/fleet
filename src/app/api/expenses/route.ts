@@ -3,9 +3,9 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import connectToDatabase from "@/lib/db";
 import Expense from "@/models/Expense";
-import Driver from "@/models/Driver";
-import WalletTransaction from "@/models/WalletTransaction";
 import mongoose from "mongoose";
+import { reviewExpense } from "@/lib/expenseLedger";
+import { readJson, withStaff } from "@/lib/incomeExpenseApi";
 
 export async function GET(req: Request) {
   try {
@@ -34,60 +34,29 @@ export async function GET(req: Request) {
   }
 }
 
+/**
+ * PUT /api/expenses  { expenseId, status: "approved" | "rejected", reason?, confirmExcess? }
+ *
+ * Legacy entry point used by the Expenses page. It now delegates to the same
+ * ledger service as POST /api/income-expense/expenses/:id/review, which:
+ *  - moves the balance exactly once per expense: expenses deducted on submit are
+ *    refunded on rejection and unchanged by approval; legacy ones are deducted
+ *    on approval,
+ *  - requires a reason to reject,
+ *  - requires confirmExcess to approve a legacy expense beyond the available balance,
+ *  - enforces the caller's company.
+ */
 export async function PUT(req: Request) {
-  try {
-    const session = await getServerSession(authOptions);
-    if (!session?.user?.id || (session.user.role !== "admin" && session.user.role !== "super_admin")) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    const { expenseId, status } = await req.json();
-    if (!expenseId || !["approved", "rejected"].includes(status)) {
-      return NextResponse.json({ error: "Invalid request" }, { status: 400 });
-    }
-
-    await connectToDatabase();
-    const sessionMongoose = await mongoose.startSession();
-    sessionMongoose.startTransaction();
-
-    try {
-      const expense = await Expense.findById(expenseId).session(sessionMongoose);
-      
-      if (!expense || expense.status !== "pending") {
-        throw new Error("Expense not found or already processed");
-      }
-
-      expense.status = status;
-      expense.adminApprovalBy = new mongoose.Types.ObjectId(session.user.id);
-      await expense.save({ session: sessionMongoose });
-
-      if (status === "approved") {
-        const driver = await Driver.findById(expense.driverId).session(sessionMongoose);
-        if (!driver) throw new Error("Driver not found");
-
-        await WalletTransaction.create([{
-          driverId: driver._id,
-          companyId: driver.companyId,
-          amount: expense.amount,
-          type: "deduction",
-          relatedExpenseId: expense._id
-        }], { session: sessionMongoose });
-
-        driver.walletBalance -= expense.amount;
-        await driver.save({ session: sessionMongoose });
-      }
-
-      await sessionMongoose.commitTransaction();
-      sessionMongoose.endSession();
-      
-      return NextResponse.json({ success: true, expense });
-    } catch (err: any) {
-      await sessionMongoose.abortTransaction();
-      sessionMongoose.endSession();
-      throw err;
-    }
-  } catch (error: any) {
-    console.error(error);
-    return NextResponse.json({ error: error.message || "Internal Server Error" }, { status: 500 });
-  }
+  return withStaff(async (actor) => {
+    const body = await readJson(req);
+    const decision = body.status === "approved" ? "approve" : body.status === "rejected" ? "reject" : undefined;
+    const result = await reviewExpense({
+      expenseId: body.expenseId,
+      decision,
+      reason: body.reason,
+      confirmExcess: body.confirmExcess,
+      actor,
+    });
+    return NextResponse.json({ success: true, ...result });
+  });
 }

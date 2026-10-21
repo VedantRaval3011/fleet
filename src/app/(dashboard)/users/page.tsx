@@ -311,6 +311,7 @@ export default function UsersPage() {
                   </SelectTrigger>
                   <SelectContent className="bg-slate-900 border-slate-800">
                     <SelectItem value="admin">Admin</SelectItem>
+                    <SelectItem value="hr">HR</SelectItem>
                     <SelectItem value="driver">Employee (Driver)</SelectItem>
                   </SelectContent>
                 </Select>
@@ -570,6 +571,7 @@ export default function UsersPage() {
                  </SelectTrigger>
                  <SelectContent className="bg-slate-900 border-slate-800">
                    <SelectItem value="admin">Admin</SelectItem>
+                    <SelectItem value="hr">HR</SelectItem>
                    <SelectItem value="driver">Employee (Driver)</SelectItem>
                  </SelectContent>
                </Select>

@@ -24,16 +24,22 @@ export default async function DriverLayout({
   return (
     <div className="flex flex-col min-h-screen bg-slate-950 text-slate-100 font-sans">
       {/* Mobile-friendly top nav */}
-      <header className="sticky top-0 z-50 flex items-center justify-between px-4 py-4 bg-slate-900 border-b border-slate-800 shadow-sm">
-        <Link href="/driver/dashboard" className="text-xl font-bold text-white tracking-tight">
-          Driver<span className="text-indigo-500">Portal</span>
-        </Link>
-        <Link 
-          href="/api/auth/signout" 
-          className="p-2 text-slate-400 hover:text-rose-400 transition-colors rounded-full hover:bg-slate-800"
-        >
-          <LogOut className="w-5 h-5" />
-        </Link>
+      <header className="sticky top-0 z-50 border-b border-slate-800/80 bg-slate-950/90 backdrop-blur">
+        <div className="mx-auto flex max-w-md items-center justify-between px-4 py-3">
+          <Link href="/driver/dashboard" className="flex items-center gap-2 text-lg font-bold tracking-tight text-white">
+            <span className="flex h-8 w-8 items-center justify-center rounded-full bg-indigo-500 text-sm font-bold text-white">
+              {(session.user.name ?? "D").charAt(0).toUpperCase()}
+            </span>
+            Fleet<span className="-ml-1.5 text-indigo-400">Wallet</span>
+          </Link>
+          <Link
+            href="/api/auth/signout"
+            aria-label="Sign out"
+            className="rounded-full p-2 text-slate-400 transition-colors hover:bg-slate-800 hover:text-rose-400"
+          >
+            <LogOut className="h-5 w-5" />
+          </Link>
+        </div>
       </header>
 
       {/* Main Content Area - Optimized for mobile scrolling */}

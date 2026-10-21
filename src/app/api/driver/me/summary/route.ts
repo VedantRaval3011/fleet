@@ -3,14 +3,18 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import connectToDatabase from "@/lib/db";
 import Driver from "@/models/Driver";
-import Expense from "@/models/Expense";
+import { getDriverAccount, listExpenses } from "@/lib/expenseLedger";
 
 export const dynamic = "force-dynamic";
 
 /**
  * GET /api/driver/me/summary
  * Used by Android Custom Tab companion and driver session context.
- * Returns wallet balance + recent expenses for the authenticated driver.
+ * Returns the authenticated driver's account and recent expenses.
+ *
+ * `walletBalance`, `driverId` and `recentExpenses[*]._id/amount/category/status/
+ * timestamp/walletBalanceAfter` keep their original names for existing clients;
+ * `account` and the extra expense fields are additive.
  */
 export async function GET() {
   try {
@@ -25,22 +29,36 @@ export async function GET() {
     if (!driver) {
       return NextResponse.json({ error: "Driver profile not found" }, { status: 404 });
     }
+    const driverId = String(driver._id);
 
-    const recentExpenses = await Expense.find({ driverId: driver._id })
-      .sort({ timestamp: -1 })
-      .limit(10)
-      .lean();
+    const [account, recent] = await Promise.all([
+      getDriverAccount(driverId),
+      listExpenses({ driverId, limit: 10 }),
+    ]);
 
     return NextResponse.json({
-      walletBalance: driver.walletBalance,
+      walletBalance: account?.balance ?? driver.walletBalance,
       driverId: driver._id,
-      recentExpenses: recentExpenses.map((e) => ({
-        _id: e._id,
+      account: account && {
+        totalAdvance: account.totalAdvance,
+        totalSubmitted: account.totalSubmitted,
+        totalApproved: account.totalApproved,
+        totalPending: account.totalPending,
+        totalRejected: account.totalRejected,
+        balance: account.balance,
+        excessAmount: account.excessAmount,
+      },
+      recentExpenses: recent.items.map((e) => ({
+        _id: e.id,
         amount: e.amount,
         category: e.category,
+        description: e.description,
+        expenseDate: e.expenseDate,
         status: e.status,
-        timestamp: e.timestamp,
-        walletBalanceAfter: e.walletBalanceAfter,
+        rejectionReason: e.rejectionReason,
+        timestamp: e.submittedAt,
+        walletBalanceAfter: e.walletBalanceAfter ?? undefined,
+        deductedOnSubmit: e.deductedOnSubmit,
       })),
     });
   } catch (error) {

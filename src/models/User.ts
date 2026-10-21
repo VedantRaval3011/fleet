@@ -16,7 +16,7 @@ export interface IUser extends Document {
   email: string;
   username?: string;
   passwordHash: string;
-  role: 'super_admin' | 'admin' | 'driver';
+  role: 'super_admin' | 'admin' | 'hr' | 'driver';
   companyId?: mongoose.Types.ObjectId;
   departmentId?: mongoose.Types.ObjectId;
   capabilities: IUserCapabilities;
@@ -29,7 +29,7 @@ const UserSchema = new Schema(
     email: { type: String, required: true, unique: true },
     username: { type: String, unique: true, sparse: true },
     passwordHash: { type: String, required: true },
-    role: { type: String, enum: ['super_admin', 'admin', 'driver'], required: true },
+    role: { type: String, enum: ['super_admin', 'admin', 'hr', 'driver'], required: true },
     companyId: { type: Schema.Types.ObjectId, ref: 'Company' },
     departmentId: { type: Schema.Types.ObjectId, ref: 'Department' },
     // Defaults fail closed: a user record created before this field existed, or

@@ -26,7 +26,7 @@ export default async function DashboardLayout({
     <SidebarProvider>
       <NavbarCountProvider>
         <div className="flex h-screen bg-slate-950 overflow-hidden font-sans text-slate-300">
-          <Sidebar />
+          <Sidebar role={session.user.role} />
           <DashboardShell>{children}</DashboardShell>
         </div>
       </NavbarCountProvider>
