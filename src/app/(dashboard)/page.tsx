@@ -47,7 +47,7 @@ export default async function DashboardPage() {
 
   // HR staff work from Income & Expense; the fleet-wide overview is not their landing page.
   if (session?.user?.role === "hr") {
-    redirect("/income-expense");
+    redirect("/expenses");
   }
   
   // Super admin might not have a strict companyId assigned, so we handle it optionally or restrict for now.

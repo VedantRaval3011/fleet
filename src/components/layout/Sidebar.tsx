@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { LayoutDashboard, Users, Map, Navigation, CreditCard, Phone, UserCog, FileText, X, Activity, Contact, Trash2, PieChart, BrainCircuit, BotMessageSquare, ScrollText, UserCheck, Smartphone, PhoneCall, Building2, UsersRound, ChevronLeft, ChevronRight, Car, QrCode, Satellite, Database, Wallet, Clock, Siren } from "lucide-react";
+import { LayoutDashboard, Users, Map, Navigation, Phone, UserCog, FileText, X, Activity, Contact, Trash2, PieChart, BrainCircuit, BotMessageSquare, ScrollText, UserCheck, Smartphone, PhoneCall, Building2, UsersRound, ChevronLeft, ChevronRight, Car, QrCode, Satellite, Database, Wallet, Clock, Siren } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useSidebar } from "./SidebarContext";
 import { useCallback, useEffect, useMemo, useRef, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
@@ -10,7 +10,7 @@ import { useCallback, useEffect, useMemo, useRef, type CSSProperties, type Point
 const sidebarNavItems = [
   { title: "Dashboard", href: "/", icon: LayoutDashboard },
   { title: "Drivers", href: "/drivers", icon: Users },
-  { title: "Income & Expense", href: "/income-expense", icon: Wallet },
+  { title: "Expenses", href: "/expenses", icon: Wallet },
   { title: "Driver Shifts", href: "/shifts", icon: Clock },
   { title: "Tracking Alerts", href: "/tracking-alerts", icon: Siren },
   { title: "Fleet GPS", href: "/fleet-map", icon: Satellite },
@@ -18,7 +18,6 @@ const sidebarNavItems = [
   { title: "Vehicles", href: "/vehicles", icon: Car },
   { title: "Device Enrollment", href: "/enrollment", icon: QrCode },
   { title: "Expense Map", href: "/live-map", icon: Map },
-  { title: "Expenses", href: "/expenses", icon: CreditCard },
   { title: "Call Logs", href: "/call-logs", icon: Phone },
   { title: "Call Tracker", href: "/call-tracker", icon: PhoneCall },
   { title: "Caller Lookup Job", href: "/caller-lookup", icon: Database },
@@ -42,7 +41,7 @@ const sidebarNavItems = [
  * This trims the menu; it is not an access boundary by itself (the income-expense
  * API enforces its own role check).
  */
-const HR_NAV_HREFS = ["/income-expense", "/drivers", "/expenses", "/shifts", "/tracking-alerts"];
+const HR_NAV_HREFS = ["/expenses", "/drivers", "/shifts", "/tracking-alerts"];
 
 export function Sidebar({ role }: { role?: string }) {
   const pathname = usePathname();

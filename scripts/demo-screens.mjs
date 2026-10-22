@@ -140,7 +140,7 @@ try {
   console.log("HR (desktop)");
   const h = await newPage({ width: 1440, height: 900, mobile: false });
   await h.login("hr@demo.fleet");
-  await h.goto("/income-expense", "document.body.innerText.includes('Ravi Kumar')");
+  await h.goto("/expenses", "document.body.innerText.includes('Ravi Kumar')");
   await h.shot("06-hr-wallets");
   await h.goto("/tracking-alerts", "document.body.innerText.includes('Live tracking status') && document.body.innerText.includes('Suresh Patel')");
   await h.shot("07-hr-tracking-alerts");
