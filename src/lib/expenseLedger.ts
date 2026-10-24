@@ -74,7 +74,9 @@ export interface Actor {
  * unscoped access.
  */
 export function companyScopeFor(actor: Actor): string | null {
-  if (actor.role === "super_admin") return actor.companyId ?? null;
+  // Super admins see every company, same as Device Enrollment. A companyId on
+  // their own user must not hide drivers who were enrolled under another company.
+  if (actor.role === "super_admin") return null;
   if (!actor.companyId) throw new LedgerError(403, "NO_COMPANY", "Your account is not assigned to a company.");
   return actor.companyId;
 }

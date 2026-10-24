@@ -3,6 +3,7 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import connectToDatabase from "@/lib/db";
 import Driver from "@/models/Driver";
+import { ensureEnrollmentDriverAccounts } from "@/lib/enrollmentDrivers";
 import mongoose from "mongoose";
 
 export async function GET(req: Request) {
@@ -13,10 +14,14 @@ export async function GET(req: Request) {
     }
 
     await connectToDatabase();
-    
+
+    const companyId = session.user.role === "super_admin" ? null : session.user.companyId!;
+    // Same people as Device Enrollment, including codes that never got a sign-in.
+    await ensureEnrollmentDriverAccounts(companyId);
+
     const query: any = {};
-    if (session.user.role !== "super_admin") {
-      query.companyId = new mongoose.Types.ObjectId(session.user.companyId!);
+    if (companyId) {
+      query.companyId = new mongoose.Types.ObjectId(companyId);
     }
 
     const drivers = await Driver.find(query).populate("userId", "name email").sort({ createdAt: -1 });
