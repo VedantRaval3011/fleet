@@ -1,31 +1,20 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  ArrowDownLeft,
-  Car,
-  Check,
-  Fuel,
-  Loader2,
-  MapPin,
-  Package,
-  ParkingSquare,
-  Plus,
-  Receipt,
-  RefreshCw,
-  Search,
-  UtensilsCrossed,
-  Wrench,
-  X,
-  type LucideIcon,
-} from "lucide-react";
-import { formatINR } from "@/lib/incomeExpenseFormat";
-import { api, type AccountRow, type ExpenseDTO, type LedgerEntryDTO, type Page, type SummaryResponse } from "./apiClient";
+import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType } from "react";
+import { Check, CheckCircle2, Clock, Loader2, MapPin, Plus, Receipt, RefreshCw, Search, Wallet, X } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { formatDateTime, formatINR } from "@/lib/incomeExpenseFormat";
+import { api, type ExpenseDTO, type LedgerEntryDTO, type Page, type SummaryResponse } from "./apiClient";
 import { AllocateAdvanceDialog } from "./AllocateAdvanceDialog";
+import { Pager } from "./Pager";
 import { ReviewDialog } from "./ReviewDialog";
 
 type FeedFilter = "all" | "pending" | "approved" | "rejected" | "advance";
-
 type TxnStatus = "pending" | "approved" | "rejected" | "advance";
 
 interface Txn {
@@ -37,14 +26,12 @@ interface Txn {
   category: string;
   amount: number;
   credit: boolean;
-  struck: boolean;
   status: TxnStatus;
   expense?: ExpenseDTO;
-  note?: string | null;
   balanceAfter: number | null;
 }
 
-const LIMIT = 30;
+const LIMIT = 25;
 
 const FILTERS: { key: FeedFilter; label: string }[] = [
   { key: "all", label: "All" },
@@ -54,16 +41,6 @@ const FILTERS: { key: FeedFilter; label: string }[] = [
   { key: "advance", label: "Money added" },
 ];
 
-const CATEGORY_ICON: Record<string, { icon: LucideIcon; bg: string; fg: string }> = {
-  Fuel: { icon: Fuel, bg: "#fce8e6", fg: "#c5221f" },
-  Toll: { icon: Car, bg: "#e8f0fe", fg: "#1a73e8" },
-  Food: { icon: UtensilsCrossed, bg: "#fce8f3", fg: "#c2185b" },
-  Parking: { icon: ParkingSquare, bg: "#f3e8fd", fg: "#7b1fa2" },
-  Maintenance: { icon: Wrench, bg: "#fef7e0", fg: "#e37400" },
-  Other: { icon: Package, bg: "#f1f3f4", fg: "#5f6368" },
-  Advance: { icon: ArrowDownLeft, bg: "#e6f4ea", fg: "#137333" },
-};
-
 const STATUS_LABEL: Record<TxnStatus, string> = {
   pending: "To be approved",
   approved: "Approved",
@@ -71,43 +48,12 @@ const STATUS_LABEL: Record<TxnStatus, string> = {
   advance: "Money added",
 };
 
-function initials(name: string) {
-  const parts = name.trim().split(/\s+/).filter(Boolean);
-  const letters = (parts[0]?.[0] ?? "?") + (parts.length > 1 ? parts[parts.length - 1][0] : "");
-  return letters.toUpperCase();
-}
-
-function timeOf(iso: string) {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "";
-  return d.toLocaleTimeString("en-IN", { hour: "numeric", minute: "2-digit" });
-}
-
-function dayKey(d: Date) {
-  return d.toLocaleDateString("en-CA");
-}
-
-function dayLabel(iso: string, now = new Date()) {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "Unknown date";
-  const k = dayKey(d);
-  if (k === dayKey(now)) return "Today";
-  const yesterday = new Date(now);
-  yesterday.setDate(yesterday.getDate() - 1);
-  if (k === dayKey(yesterday)) return "Yesterday";
-  return d.toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" });
-}
-
-function groupTxns(items: Txn[]) {
-  const groups: { label: string; items: Txn[] }[] = [];
-  for (const item of items) {
-    const label = dayLabel(item.at);
-    const last = groups[groups.length - 1];
-    if (!last || last.label !== label) groups.push({ label, items: [item] });
-    else last.items.push(item);
-  }
-  return groups;
-}
+const STATUS_BADGE: Record<TxnStatus, string> = {
+  pending: "border-amber-500/20 bg-amber-500/10 text-amber-500",
+  approved: "border-emerald-500/20 bg-emerald-500/10 text-emerald-500",
+  rejected: "border-rose-500/20 bg-rose-500/10 text-rose-500",
+  advance: "border-emerald-500/30 bg-emerald-500/10 text-emerald-400",
+};
 
 function expenseTxn(e: ExpenseDTO): Txn {
   return {
@@ -119,7 +65,6 @@ function expenseTxn(e: ExpenseDTO): Txn {
     category: e.category,
     amount: e.amount,
     credit: false,
-    struck: e.status === "rejected",
     status: e.status,
     expense: e,
     balanceAfter: e.walletBalanceAfter,
@@ -136,23 +81,9 @@ function advanceTxn(e: LedgerEntryDTO): Txn {
     category: "Advance",
     amount: e.amount,
     credit: true,
-    struck: false,
     status: "advance",
-    note: e.note,
     balanceAfter: e.balanceAfter,
   };
-}
-
-function dedupe<T>(items: T[], idOf: (item: T) => string) {
-  const seen = new Set<string>();
-  const out: T[] = [];
-  for (const item of items) {
-    const id = idOf(item);
-    if (seen.has(id)) continue;
-    seen.add(id);
-    out.push(item);
-  }
-  return out;
 }
 
 async function fetchFeed(page: number, filter: FeedFilter, driverId: string | null) {
@@ -180,16 +111,30 @@ async function fetchFeed(page: number, filter: FeedFilter, driverId: string | nu
   };
 }
 
-function Mark({ category }: { category: string }) {
-  const style = CATEGORY_ICON[category] ?? CATEGORY_ICON.Other;
-  const Icon = style.icon;
+function Stat({
+  label,
+  value,
+  sub,
+  icon: Icon,
+  tone,
+}: {
+  label: string;
+  value: string;
+  sub?: string;
+  icon: ComponentType<{ className?: string }>;
+  tone: string;
+}) {
   return (
-    <span
-      className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full"
-      style={{ backgroundColor: style.bg, color: style.fg }}
-    >
-      <Icon className="h-5 w-5" aria-hidden />
-    </span>
+    <Card className="flex items-center justify-between border-slate-800 bg-slate-900 p-4">
+      <div className="min-w-0">
+        <p className="text-sm font-medium text-slate-400">{label}</p>
+        <p className={`mt-1 truncate font-mono text-2xl font-bold ${tone}`}>{value}</p>
+        {sub && <p className="mt-0.5 truncate text-xs text-slate-500">{sub}</p>}
+      </div>
+      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-slate-800/70">
+        <Icon className={`h-5 w-5 ${tone}`} />
+      </div>
+    </Card>
   );
 }
 
@@ -210,9 +155,7 @@ export default function IncomeExpenseClient() {
   const [expenseTotal, setExpenseTotal] = useState(0);
   const [advanceTotal, setAdvanceTotal] = useState(0);
   const [feedLoading, setFeedLoading] = useState(true);
-  const [loadingMore, setLoadingMore] = useState(false);
   const [feedError, setFeedError] = useState("");
-  const [openKey, setOpenKey] = useState<string | null>(null);
 
   const [allocateFor, setAllocateFor] = useState<string | undefined | null>(null);
   const [review, setReview] = useState<{ expense: ExpenseDTO; mode: "approve" | "reject" } | null>(null);
@@ -245,15 +188,13 @@ export default function IncomeExpenseClient() {
     const gen = ++feedGen.current;
     setFeedLoading(true);
     setFeedError("");
-    setOpenKey(null);
-    fetchFeed(1, filter, selectedId)
+    fetchFeed(page, filter, selectedId)
       .then((data) => {
         if (feedGen.current !== gen) return;
         setExpenses(data.expenses);
         setAdvances(data.advances);
         setExpenseTotal(data.expenseTotal);
         setAdvanceTotal(data.advanceTotal);
-        setPage(1);
       })
       .catch((e) => {
         if (feedGen.current !== gen) return;
@@ -264,27 +205,23 @@ export default function IncomeExpenseClient() {
       .finally(() => {
         if (feedGen.current === gen) setFeedLoading(false);
       });
-  }, [filter, selectedId, refreshKey]);
+  }, [filter, selectedId, page, refreshKey]);
 
   const driversById = useMemo(
     () => new Map((summary?.drivers ?? []).map((d) => [d.driverId, d])),
     [summary]
   );
+  const drivers = useMemo(
+    () => (summary?.drivers ?? []).slice().sort((a, b) => a.name.localeCompare(b.name)),
+    [summary]
+  );
 
   const selected = selectedId ? driversById.get(selectedId) : undefined;
   const totals = summary?.totals;
-
   const available = selected ? selected.balance : totals?.netBalance ?? 0;
   const approved = selected ? selected.totalApproved : totals?.totalApproved ?? 0;
   const toApprove = selected ? selected.totalPending : totals?.totalPending ?? 0;
-
-  const people = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    return (summary?.drivers ?? [])
-      .filter((d) => !q || d.name.toLowerCase().includes(q) || d.email.toLowerCase().includes(q))
-      .slice()
-      .sort((a, b) => b.pendingCount - a.pendingCount || a.name.localeCompare(b.name));
-  }, [summary, search]);
+  const figure = summaryLoading && !summary ? "—" : null;
 
   const txns = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -297,310 +234,251 @@ export default function IncomeExpenseClient() {
     );
   }, [expenses, advances, search]);
 
-  const hasMore =
-    filter === "advance"
-      ? page * LIMIT < advanceTotal
-      : page * LIMIT < expenseTotal || (filter === "all" && page * LIMIT < advanceTotal);
+  const tableTotal =
+    filter === "advance" ? advanceTotal : filter === "all" ? Math.max(expenseTotal, advanceTotal) : expenseTotal;
 
-  async function loadMore() {
-    const next = page + 1;
-    const gen = feedGen.current;
-    setLoadingMore(true);
-    setFeedError("");
-    try {
-      const data = await fetchFeed(next, filter, selectedId);
-      if (feedGen.current !== gen) return;
-      setExpenses((prev) => dedupe([...prev, ...data.expenses], (e) => e.id));
-      setAdvances((prev) => dedupe([...prev, ...data.advances], (e) => e.id));
-      setExpenseTotal(data.expenseTotal);
-      setAdvanceTotal(data.advanceTotal);
-      setPage(next);
-    } catch (e) {
-      setFeedError(e instanceof Error ? e.message : "Failed to load more transactions.");
-    } finally {
-      setLoadingMore(false);
-    }
-  }
+  const availableSub = selected
+    ? selected.excessAmount > 0
+      ? "Overdrawn · payable to this driver"
+      : selected.name
+    : totals && totals.totalExcess > 0
+      ? `${formatINR(totals.totalExcess)} payable to overdrawn drivers`
+      : `Across ${totals?.driverCount ?? 0} ${(totals?.driverCount ?? 0) === 1 ? "driver" : "drivers"}`;
 
   return (
-    <div className="-m-4 min-h-full bg-[#f8f9fa] px-4 py-5 text-[#202124] sm:-m-6 sm:px-6 md:-m-8">
-      <div className="mx-auto max-w-lg">
-        <div className="mb-4 flex items-center justify-between">
-          <h1 className="text-[22px] font-medium tracking-tight">Expenses</h1>
-          <button
-            type="button"
+    <div className="space-y-6">
+      <div className="flex flex-col items-start justify-between gap-4 sm:flex-row sm:items-center">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight text-white">Expenses</h1>
+          <p className="mt-1 text-sm text-slate-400">Available balance, approvals, and every transaction.</p>
+        </div>
+        <div className="flex gap-2">
+          <Button
+            variant="outline"
+            className="border-slate-700 bg-transparent text-slate-300"
             onClick={refresh}
-            className="rounded-full p-2 text-[#5f6368] hover:bg-[#e8eaed]"
-            aria-label="Refresh"
+            title="Refresh"
           >
-            <RefreshCw className="h-5 w-5" />
+            <RefreshCw className="h-4 w-4" />
+          </Button>
+          <Button className="bg-emerald-600 text-white hover:bg-emerald-700" onClick={() => setAllocateFor(selectedId ?? undefined)}>
+            <Plus className="mr-1 h-4 w-4" /> Add money
+          </Button>
+        </div>
+      </div>
+
+      {notice && (
+        <div className="flex items-start justify-between gap-3 rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm text-emerald-300">
+          <span>{notice}</span>
+          <button type="button" onClick={() => setNotice("")} className="text-emerald-400 hover:text-white" aria-label="Dismiss">
+            ×
           </button>
         </div>
-
-        {notice && (
-          <div className="mb-3 flex items-start justify-between gap-3 rounded-2xl bg-[#e6f4ea] px-4 py-3 text-sm text-[#137333]">
-            <span>{notice}</span>
-            <button type="button" onClick={() => setNotice("")} aria-label="Dismiss" className="text-[#137333]">
-              ×
-            </button>
-          </div>
-        )}
-        {summaryError && (
-          <div className="mb-3 rounded-2xl bg-[#fce8e6] px-4 py-3 text-sm text-[#c5221f]">{summaryError}</div>
-        )}
-        {totals && totals.driftedCount > 0 && (
-          <div className="mb-3 rounded-2xl bg-[#fef7e0] px-4 py-3 text-sm text-[#b06000]">
-            {totals.driftedCount} driver {totals.driftedCount === 1 ? "balance does" : "balances do"} not match the
-            ledger. Figures here come from the ledger.
-          </div>
-        )}
-
-        <section className="overflow-hidden rounded-[28px] bg-gradient-to-br from-[#1a73e8] to-[#174ea6] p-6 text-white shadow-lg shadow-[#1a73e8]/20">
-          <p className="text-sm text-white/80">{selected ? selected.name : "Available balance"}</p>
-          <p className="mt-1 text-4xl font-medium tracking-tight tabular-nums">
-            {summaryLoading && !summary ? "—" : formatINR(available)}
-          </p>
-          <p className="mt-1 text-sm text-white/75">
-            {selected
-              ? selected.excessAmount > 0
-                ? "Overdrawn · payable to this driver"
-                : "Available to spend"
-              : totals && totals.totalExcess > 0
-                ? `Across ${totals.driverCount} drivers · ${formatINR(totals.totalExcess)} payable to overdrawn drivers`
-                : `Across ${totals?.driverCount ?? 0} ${(totals?.driverCount ?? 0) === 1 ? "driver" : "drivers"}`}
-          </p>
-          <div className="mt-5 grid grid-cols-2 gap-3 border-t border-white/20 pt-4">
-            <div>
-              <p className="text-xs text-white/70">Approved</p>
-              <p className="mt-0.5 text-lg font-medium tabular-nums">{summaryLoading && !summary ? "—" : formatINR(approved)}</p>
-            </div>
-            <div>
-              <p className="text-xs text-white/70">To be approved</p>
-              <p className="mt-0.5 text-lg font-medium tabular-nums">{summaryLoading && !summary ? "—" : formatINR(toApprove)}</p>
-            </div>
-          </div>
-          <button
-            type="button"
-            onClick={() => setAllocateFor(selectedId ?? undefined)}
-            className="mt-5 inline-flex items-center gap-1.5 rounded-full bg-white px-4 py-2 text-sm font-medium text-[#1a73e8] hover:bg-[#e8f0fe]"
-          >
-            <Plus className="h-4 w-4" />
-            Add money
-          </button>
-        </section>
-
-        <div className="relative mt-4">
-          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#5f6368]" />
-          <input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search transactions or drivers"
-            aria-label="Search transactions or drivers"
-            className="h-11 w-full rounded-full border-0 bg-white pl-10 pr-4 text-sm text-[#202124] shadow-sm outline-none ring-1 ring-[#dadce0] placeholder:text-[#80868b] focus:ring-2 focus:ring-[#1a73e8]"
-          />
+      )}
+      {summaryError && (
+        <div className="rounded-lg border border-rose-500/30 bg-rose-500/10 p-3 text-sm text-rose-300">{summaryError}</div>
+      )}
+      {totals && totals.driftedCount > 0 && (
+        <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-300">
+          {totals.driftedCount} driver {totals.driftedCount === 1 ? "balance does" : "balances do"} not match the ledger.
+          Figures here come from the ledger.
         </div>
+      )}
 
-        <div className="mt-4 flex gap-3 overflow-x-auto pb-1" aria-label="Drivers">
-          <button
-            type="button"
-            onClick={() => setSelectedId(null)}
-            aria-pressed={selectedId === null}
-            className="flex w-16 shrink-0 flex-col items-center gap-1"
-          >
-            <span
-              className={`flex h-12 w-12 items-center justify-center rounded-full text-sm font-medium ${
-                selectedId === null ? "bg-[#1a73e8] text-white" : "bg-white text-[#1a73e8] ring-1 ring-[#dadce0]"
-              }`}
-            >
-              All
-            </span>
-            <span className="w-full truncate text-center text-[11px] text-[#5f6368]">Everyone</span>
-          </button>
-          {people.map((d: AccountRow) => {
-            const on = selectedId === d.driverId;
-            return (
-              <button
-                key={d.driverId}
-                type="button"
-                onClick={() => setSelectedId(on ? null : d.driverId)}
-                aria-pressed={on}
-                className="flex w-16 shrink-0 flex-col items-center gap-1"
-                title={d.name}
-              >
-                <span
-                  className={`relative flex h-12 w-12 items-center justify-center rounded-full text-sm font-medium ${
-                    on ? "bg-[#1a73e8] text-white" : "bg-white text-[#1a73e8] ring-1 ring-[#dadce0]"
-                  }`}
-                >
-                  {initials(d.name)}
-                  {d.pendingCount > 0 && (
-                    <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-[#e37400] px-1 text-[10px] font-medium text-white">
-                      {d.pendingCount}
-                    </span>
-                  )}
-                </span>
-                <span className="w-full truncate text-center text-[11px] text-[#3c4043]">{d.name}</span>
-              </button>
-            );
-          })}
-        </div>
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+        <Stat
+          label="Available balance"
+          value={figure ?? formatINR(available)}
+          sub={availableSub}
+          icon={Wallet}
+          tone={available < 0 ? "text-rose-400" : "text-emerald-400"}
+        />
+        <Stat
+          label="Approved"
+          value={figure ?? formatINR(approved)}
+          sub="Confirmed by HR / admin"
+          icon={CheckCircle2}
+          tone="text-emerald-400"
+        />
+        <Stat
+          label="To be approved"
+          value={figure ?? formatINR(toApprove)}
+          sub={`${(selected ? selected.pendingCount : totals?.pendingCount) ?? 0} waiting`}
+          icon={Clock}
+          tone="text-amber-400"
+        />
+      </div>
 
-        <div className="mt-3 flex gap-2 overflow-x-auto pb-1" role="tablist" aria-label="Transaction filter">
-          {FILTERS.map((f) => {
-            const on = filter === f.key;
-            const count = f.key === "pending" ? totals?.pendingCount ?? 0 : 0;
-            return (
+      <Card className="overflow-hidden border-slate-800 bg-slate-900 text-slate-100">
+        <div className="flex flex-col gap-3 border-b border-slate-800 p-4 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex items-center gap-2 overflow-x-auto">
+            {FILTERS.map((f) => (
               <button
                 key={f.key}
                 type="button"
-                role="tab"
-                aria-selected={on}
-                onClick={() => setFilter(f.key)}
-                className={`whitespace-nowrap rounded-full px-4 py-1.5 text-sm font-medium ${
-                  on ? "bg-[#e8f0fe] text-[#1967d2]" : "bg-white text-[#3c4043] ring-1 ring-[#dadce0]"
+                onClick={() => {
+                  setFilter(f.key);
+                  setPage(1);
+                }}
+                className={`whitespace-nowrap rounded-full px-4 py-1.5 text-sm font-medium transition-colors ${
+                  filter === f.key ? "bg-slate-800 text-white" : "text-slate-400 hover:bg-slate-800/50 hover:text-slate-200"
                 }`}
               >
                 {f.label}
-                {count > 0 && <span className="ml-1.5 text-xs">{count}</span>}
+                {f.key === "pending" && (totals?.pendingCount ?? 0) > 0 && (
+                  <span className="ml-1.5 text-xs text-amber-400">{totals?.pendingCount}</span>
+                )}
               </button>
-            );
-          })}
+            ))}
+          </div>
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <Select
+              value={selectedId ?? "all"}
+              onValueChange={(id) => {
+                setSelectedId(id === "all" ? null : id);
+                setPage(1);
+              }}
+            >
+              <SelectTrigger className="w-full border-slate-700 bg-slate-950 text-slate-200 sm:w-52">
+                <SelectValue placeholder="All drivers" />
+              </SelectTrigger>
+              <SelectContent className="border-slate-800 bg-slate-900 text-slate-200">
+                <SelectItem value="all">All drivers</SelectItem>
+                {drivers.map((d) => (
+                  <SelectItem key={d.driverId} value={d.driverId}>
+                    {d.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <div className="relative sm:w-64">
+              <Search className="absolute left-3 top-2.5 h-4 w-4 text-slate-500" />
+              <Input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search this page"
+                aria-label="Search transactions"
+                className="h-9 border-slate-700 bg-slate-950 pl-9 text-slate-200"
+              />
+            </div>
+          </div>
         </div>
 
-        <section className="mt-4" aria-label="Transactions">
-          {feedError && <p className="mb-2 text-sm text-[#c5221f]">{feedError}</p>}
-          {feedLoading ? (
-            <div className="flex h-40 items-center justify-center">
-              <Loader2 className="h-7 w-7 animate-spin text-[#1a73e8]" />
-            </div>
-          ) : txns.length === 0 ? (
-            <div className="rounded-3xl bg-white px-6 py-12 text-center shadow-sm">
-              <Receipt className="mx-auto h-8 w-8 text-[#dadce0]" />
-              <p className="mt-2 text-sm text-[#5f6368]">
-                {search.trim() ? "No transactions match that search." : "No transactions yet."}
-              </p>
-            </div>
-          ) : (
-            <div className="space-y-4">
-              {groupTxns(txns).map((group) => (
-                <div key={group.label}>
-                  <h2 className="mb-1.5 px-1 text-xs font-medium uppercase tracking-wide text-[#5f6368]">{group.label}</h2>
-                  <ul className="overflow-hidden rounded-3xl bg-white shadow-sm">
-                    {group.items.map((txn, index) => {
-                      const open = openKey === txn.key;
-                      const pending = txn.status === "pending" && txn.expense;
-                      return (
-                        <li key={txn.key} className={index > 0 ? "border-t border-[#f1f3f4]" : ""}>
-                          <button
-                            type="button"
-                            onClick={() => setOpenKey(open ? null : txn.key)}
-                            aria-expanded={open}
-                            className="flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-[#f8f9fa]"
-                          >
-                            <Mark category={txn.category} />
-                            <span className="min-w-0 flex-1">
-                              <span className="block truncate text-[15px] font-medium text-[#202124]">{txn.title}</span>
-                              <span className="mt-0.5 block truncate text-xs text-[#5f6368]">
-                                {txn.driverName} · {timeOf(txn.at)}
-                                {txn.status !== "advance" ? ` · ${STATUS_LABEL[txn.status]}` : ""}
-                              </span>
-                            </span>
-                            <span className="shrink-0 text-right">
-                              <span
-                                className={`block text-[15px] font-medium tabular-nums ${
-                                  txn.credit ? "text-[#137333]" : "text-[#202124]"
-                                } ${txn.struck ? "line-through text-[#80868b]" : ""}`}
-                              >
-                                {txn.credit ? "+" : "−"}
-                                {formatINR(txn.amount)}
-                              </span>
-                              {txn.balanceAfter !== null && (
-                                <span
-                                  className={`mt-0.5 block text-[11px] tabular-nums ${
-                                    txn.balanceAfter < 0 ? "text-[#c5221f]" : "text-[#80868b]"
-                                  }`}
-                                >
-                                  Bal {formatINR(txn.balanceAfter)}
-                                </span>
-                              )}
-                            </span>
-                          </button>
-                          {open && (
-                            <div className="space-y-3 bg-[#f8f9fa] px-4 py-3 text-sm text-[#3c4043]">
-                              <p>
-                                {txn.category}
-                                {txn.status === "advance" && txn.note ? ` · ${txn.note}` : ""}
-                              </p>
-                              {txn.expense?.status === "rejected" && txn.expense.rejectionReason && (
-                                <p className="text-[#c5221f]">Rejected: {txn.expense.rejectionReason}</p>
-                              )}
-                              {txn.expense && (
-                                <div className="flex flex-wrap items-center gap-3">
-                                  <a
-                                    href={txn.expense.receiptUrl}
-                                    target="_blank"
-                                    rel="noreferrer"
-                                    className="inline-flex items-center gap-1 text-[#1a73e8]"
-                                  >
-                                    <Receipt className="h-4 w-4" />
-                                    Receipt
-                                  </a>
-                                  {txn.expense.location && (
-                                    <a
-                                      href={`https://maps.google.com/?q=${txn.expense.location.lat},${txn.expense.location.lng}`}
-                                      target="_blank"
-                                      rel="noreferrer"
-                                      className="inline-flex items-center gap-1 text-[#1a73e8]"
-                                    >
-                                      <MapPin className="h-4 w-4" />
-                                      Location
-                                    </a>
-                                  )}
-                                </div>
-                              )}
-                              {pending && (
-                                <div className="flex gap-2">
-                                  <button
-                                    type="button"
-                                    onClick={() => setReview({ expense: txn.expense!, mode: "approve" })}
-                                    className="inline-flex items-center gap-1 rounded-full bg-[#1a73e8] px-4 py-1.5 text-sm font-medium text-white hover:bg-[#174ea6]"
-                                  >
-                                    <Check className="h-4 w-4" />
-                                    Approve
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => setReview({ expense: txn.expense!, mode: "reject" })}
-                                    className="inline-flex items-center gap-1 rounded-full px-4 py-1.5 text-sm font-medium text-[#c5221f] hover:bg-[#fce8e6]"
-                                  >
-                                    <X className="h-4 w-4" />
-                                    Decline
-                                  </button>
-                                </div>
-                              )}
-                            </div>
-                          )}
-                        </li>
-                      );
-                    })}
-                  </ul>
-                </div>
-              ))}
-              {hasMore && !search.trim() && (
-                <button
-                  type="button"
-                  onClick={loadMore}
-                  disabled={loadingMore}
-                  className="flex w-full items-center justify-center gap-2 py-2 text-sm font-medium text-[#1a73e8] disabled:opacity-60"
-                >
-                  {loadingMore && <Loader2 className="h-4 w-4 animate-spin" />}
-                  Show older transactions
-                </button>
-              )}
-            </div>
-          )}
-        </section>
-      </div>
+        {feedError && <p className="px-4 pt-4 text-sm text-rose-400">{feedError}</p>}
+
+        <Table>
+          <TableHeader className="bg-slate-950/50">
+            <TableRow className="border-slate-800">
+              <TableHead className="text-slate-400">Date</TableHead>
+              <TableHead className="text-slate-400">Driver</TableHead>
+              <TableHead className="text-slate-400">Transaction</TableHead>
+              <TableHead className="text-slate-400">Status</TableHead>
+              <TableHead className="text-right text-slate-400">Amount</TableHead>
+              <TableHead className="text-right text-slate-400">Balance after</TableHead>
+              <TableHead className="text-right text-slate-400">Actions</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {feedLoading ? (
+              <TableRow>
+                <TableCell colSpan={7} className="h-32 text-center">
+                  <Loader2 className="mx-auto h-6 w-6 animate-spin text-indigo-500" />
+                </TableCell>
+              </TableRow>
+            ) : txns.length === 0 ? (
+              <TableRow>
+                <TableCell colSpan={7} className="h-24 text-center text-slate-500">
+                  {search.trim() ? "No transactions on this page match that search." : "No transactions in this view."}
+                </TableCell>
+              </TableRow>
+            ) : (
+              txns.map((txn) => (
+                <TableRow key={txn.key} className="border-slate-800 align-top hover:bg-slate-800/30">
+                  <TableCell className="whitespace-nowrap text-xs text-slate-400">{formatDateTime(txn.at)}</TableCell>
+                  <TableCell className="font-medium text-white">{txn.driverName}</TableCell>
+                  <TableCell className="max-w-xs">
+                    <div className="text-sm text-slate-200">{txn.title}</div>
+                    <div className="mt-1.5 flex flex-wrap items-center gap-2">
+                      <Badge variant="outline" className="h-5 border-slate-700 text-[10px] text-slate-300">
+                        {txn.category}
+                      </Badge>
+                      {txn.expense && (
+                        <a
+                          href={txn.expense.receiptUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex items-center rounded-md bg-indigo-500/10 px-2 py-1 text-xs text-indigo-400 hover:text-indigo-300"
+                        >
+                          <Receipt className="mr-1 h-3 w-3" /> Receipt
+                        </a>
+                      )}
+                      {txn.expense?.location && (
+                        <a
+                          href={`https://maps.google.com/?q=${txn.expense.location.lat},${txn.expense.location.lng}`}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex items-center rounded-md bg-sky-500/10 px-2 py-1 text-xs text-sky-400 hover:text-sky-300"
+                        >
+                          <MapPin className="mr-1 h-3 w-3" /> Location
+                        </a>
+                      )}
+                    </div>
+                    {txn.expense?.status === "rejected" && txn.expense.rejectionReason && (
+                      <p className="mt-1.5 text-xs text-rose-300">Reason: {txn.expense.rejectionReason}</p>
+                    )}
+                  </TableCell>
+                  <TableCell>
+                    <Badge variant="outline" className={STATUS_BADGE[txn.status]}>
+                      {STATUS_LABEL[txn.status]}
+                    </Badge>
+                  </TableCell>
+                  <TableCell
+                    className={`whitespace-nowrap text-right font-mono text-base font-bold ${
+                      txn.credit ? "text-emerald-400" : txn.status === "rejected" ? "text-slate-500 line-through" : "text-amber-400"
+                    }`}
+                  >
+                    {txn.credit ? "+" : "−"}
+                    {formatINR(txn.amount)}
+                  </TableCell>
+                  <TableCell
+                    className={`whitespace-nowrap text-right font-mono ${
+                      txn.balanceAfter === null ? "text-slate-600" : txn.balanceAfter < 0 ? "text-rose-400" : "text-slate-200"
+                    }`}
+                  >
+                    {txn.balanceAfter === null ? "—" : formatINR(txn.balanceAfter)}
+                  </TableCell>
+                  <TableCell className="text-right">
+                    {txn.status === "pending" && txn.expense ? (
+                      <div className="flex justify-end gap-2">
+                        <Button
+                          size="sm"
+                          className="border border-emerald-500/30 bg-emerald-600/20 text-emerald-500 hover:bg-emerald-600/30"
+                          onClick={() => setReview({ expense: txn.expense!, mode: "approve" })}
+                        >
+                          <Check className="mr-1 h-4 w-4" /> Approve
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="border-rose-500/30 text-rose-500 hover:bg-rose-500/10"
+                          onClick={() => setReview({ expense: txn.expense!, mode: "reject" })}
+                        >
+                          <X className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    ) : (
+                      <span className="text-xs text-slate-600">—</span>
+                    )}
+                  </TableCell>
+                </TableRow>
+              ))
+            )}
+          </TableBody>
+        </Table>
+        {!search.trim() && (
+          <Pager page={page} limit={LIMIT} total={tableTotal} onPage={(p) => setPage(p)} />
+        )}
+      </Card>
 
       {allocateFor !== null && (
         <AllocateAdvanceDialog
