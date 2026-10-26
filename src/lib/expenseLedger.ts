@@ -248,6 +248,23 @@ interface ExpenseRow {
   walletBalanceAfter?: number;
   deductedOnSubmit?: boolean;
   location?: { lat: number; lng: number };
+  createdAt?: Date;
+}
+
+/** ISO time, or null when the stored value is missing or not a real date. */
+function isoOrNull(value: unknown): string | null {
+  if (value == null || value === "") return null;
+  const d = value instanceof Date ? value : new Date(value as string | number);
+  return Number.isNaN(d.getTime()) ? null : d.toISOString();
+}
+
+/** First usable date among the candidates. Legacy rows sometimes have neither. */
+function isoDate(...values: unknown[]): string {
+  for (const value of values) {
+    const iso = isoOrNull(value);
+    if (iso) return iso;
+  }
+  return new Date(0).toISOString();
 }
 
 /** A LedgerEntry as read from the database (lean) or just created. */
@@ -286,11 +303,11 @@ function toExpenseDTO(e: ExpenseRow): ExpenseDTO {
     category: e.category,
     // Rows created before `description` existed carry their text in `note`.
     description: e.description ?? e.note ?? "",
-    expenseDate: new Date(e.expenseDate ?? e.timestamp).toISOString(),
-    submittedAt: new Date(e.timestamp).toISOString(),
+    expenseDate: isoDate(e.expenseDate, e.timestamp, e.createdAt),
+    submittedAt: isoDate(e.timestamp, e.createdAt, e.expenseDate),
     status: e.status,
     reviewedByName: e.adminApprovalBy?.name ?? null,
-    reviewedAt: e.reviewedAt ? new Date(e.reviewedAt).toISOString() : null,
+    reviewedAt: isoOrNull(e.reviewedAt),
     rejectionReason: e.rejectionReason ?? null,
     excessAmount: e.excessAmount ?? 0,
     balanceAfterApproval: e.status === "approved" ? e.walletBalanceAfter ?? null : null,
@@ -316,7 +333,7 @@ function toLedgerDTO(l: LedgerRow): LedgerEntryDTO {
     note: l.note ?? null,
     isAdditionalAdvance: !!l.isAdditionalAdvance,
     excessAmount: l.excessAmount ?? 0,
-    timestamp: new Date(l.timestamp).toISOString(),
+    timestamp: isoDate(l.timestamp),
   };
 }
 
@@ -736,6 +753,14 @@ export async function getAccountSummaries(filter: AccountFilter): Promise<{
     rowMatch.driverId = did;
   }
 
+  // A claim waits for approval only after the driver spends and attaches a receipt.
+  const awaitingApproval = {
+    $and: [
+      { $eq: ["$deductedOnSubmit", true] },
+      { $regexMatch: { input: { $ifNull: ["$photoUrl", ""] }, regex: "^data:image/" } },
+    ],
+  };
+
   const [drivers, ledgerAgg, expenseAgg] = await Promise.all([
     DriverM.find(driverMatch).populate("userId", "name email").lean(),
     LedgerM.aggregate([
@@ -756,13 +781,21 @@ export async function getAccountSummaries(filter: AccountFilter): Promise<{
           _id: { driverId: "$driverId", status: "$status" },
           amount: { $sum: "$amount" },
           deductedAmount: { $sum: { $cond: [{ $eq: ["$deductedOnSubmit", true] }, "$amount", 0] } },
+          queueAmount: { $sum: { $cond: [awaitingApproval, "$amount", 0] } },
+          queueCount: { $sum: { $cond: [awaitingApproval, 1, 0] } },
           count: { $sum: 1 },
         },
       },
     ]),
   ]);
 
-  type Bucket = { amount: number; count: number; deductedAmount?: number };
+  type Bucket = {
+    amount: number;
+    count: number;
+    deductedAmount?: number;
+    queueAmount?: number;
+    queueCount?: number;
+  };
   const ledger = new Map<string, { byType: Record<string, Bucket>; last: Date | null }>();
   for (const r of ledgerAgg) {
     const id = String(r._id.driverId);
@@ -775,7 +808,13 @@ export async function getAccountSummaries(filter: AccountFilter): Promise<{
   for (const r of expenseAgg) {
     const id = String(r._id.driverId);
     const slot = expenses.get(id) ?? {};
-    slot[r._id.status] = { amount: r.amount, count: r.count, deductedAmount: r.deductedAmount };
+    slot[r._id.status] = {
+      amount: r.amount,
+      count: r.count,
+      deductedAmount: r.deductedAmount,
+      queueAmount: r.queueAmount,
+      queueCount: r.queueCount,
+    };
     expenses.set(id, slot);
   }
 
@@ -788,7 +827,7 @@ export async function getAccountSummaries(filter: AccountFilter): Promise<{
       totalAdvance: sum(l?.byType, "advance"),
       totalApproved: sum(l?.byType, "expense_approved"),
       totalSubmitted: sum(e, "pending") + sum(e, "approved") + sum(e, "rejected"),
-      totalPending: sum(e, "pending"),
+      totalPending: e.pending?.queueAmount ?? 0,
       totalRejected: sum(e, "rejected"),
       totalPendingDeducted: e.pending?.deductedAmount ?? 0,
     });
@@ -802,13 +841,29 @@ export async function getAccountSummaries(filter: AccountFilter): Promise<{
       status: d.status,
       advanceCount: l?.byType.advance?.count ?? 0,
       submittedCount: (e.pending?.count ?? 0) + (e.approved?.count ?? 0) + (e.rejected?.count ?? 0),
-      pendingCount: e.pending?.count ?? 0,
+      pendingCount: e.pending?.queueCount ?? 0,
       lastActivityAt: l?.last ? new Date(l.last).toISOString() : null,
       cachedBalance,
       drifted: Math.abs(cachedBalance - figures.balance) > DRIFT_TOLERANCE,
     };
   });
   rows.sort((a, b) => a.name.localeCompare(b.name));
+
+  // The wallet cache is a convenience copy of the ledger. When it has drifted
+  // (legacy edits that never wrote a ledger line), put it back so the warning
+  // and the Android balance agree with the figures on this page.
+  const driftedRows = rows.filter((r) => r.drifted);
+  if (driftedRows.length) {
+    await Promise.all(
+      driftedRows.map((r) =>
+        DriverM.updateOne({ _id: r.driverId }, { $set: { walletBalance: r.balance } })
+      )
+    );
+    for (const r of driftedRows) {
+      r.cachedBalance = r.balance;
+      r.drifted = false;
+    }
+  }
 
   const totals = rows.reduce<AccountTotals>(
     (t, r) => ({
@@ -918,7 +973,19 @@ export async function listExpenses(q: ExpenseQuery) {
   const match: Record<string, unknown> = {};
   if (q.companyId) match.companyId = new mongoose.Types.ObjectId(q.companyId);
   if (q.driverId) match.driverId = new mongoose.Types.ObjectId(q.driverId);
-  if (q.status) match.status = q.status;
+  if (q.status === "pending") {
+    match.status = "pending";
+    match.deductedOnSubmit = true;
+    match.photoUrl = { $regex: /^data:image\// };
+  } else if (q.status) {
+    match.status = q.status;
+  } else {
+    // "All" hides leftover claims that were never a spend with a receipt.
+    match.$or = [
+      { status: { $ne: "pending" } },
+      { status: "pending", deductedOnSubmit: true, photoUrl: { $regex: /^data:image\// } },
+    ];
+  }
   const [rows, total] = await Promise.all([
     ExpenseM.find(match)
       .select("-photoUrl") // receipts can be megabytes each; fetched on demand
